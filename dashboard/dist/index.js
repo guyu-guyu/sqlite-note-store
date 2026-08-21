@@ -35,8 +35,6 @@
     return Math.floor(d / 86400) + "d";
   }
 
-  function catDepth(name) { return (name || "").split("/").filter(Boolean).length; }
-  function catLabel(name) { var s = (name || "").split("/").filter(Boolean); return s[s.length - 1] || name; }
 
   // ── INDEX 树 ──────────────────────────────────────────────────────────
 
@@ -74,32 +72,67 @@
     var tree = [];
     var sel = props.selectedNode;
 
-    st.data.categories.forEach(function (cat) {
-      var catKey = "cat:" + cat.category;
-      var isCatOpen = !!expanded[catKey];
-      var isCatActive = sel && sel.type === "category" && sel.name === cat.category;
+    // 扁平 categories → 嵌套树（按 "/" 分段；父节点展开时显示子分类 + 直接组）
+    function buildCatTree(cats) {
+      var roots = [], byPath = {};
+      cats.forEach(function (cat) {
+        var segs = (cat.category || "").split("/").filter(Boolean);
+        if (segs.length === 0) segs = ["uncategorized"];
+        var parent = null, parentPath = "";
+        for (var i = 0; i < segs.length; i++) {
+          var nodePath = parentPath ? parentPath + "/" + segs[i] : segs[i];
+          var node = byPath[nodePath];
+          if (!node) {
+            node = { name: segs[i], path: nodePath, cat: null, children: [], files: [] };
+            byPath[nodePath] = node;
+            if (parent) parent.children.push(node); else roots.push(node);
+          }
+          parent = node; parentPath = nodePath;
+        }
+        parent.cat = cat;
+        parent.files = cat.files || [];
+      });
+      return roots;
+    }
 
-      var catCount = (cat.files || []).reduce(function (sum, fl) { return sum + (fl.entry_count || (fl.entries ? fl.entries.length : 0)); }, 0);
+    // 每节点的子树条目数（含子分类），父分类行显示汇总
+    var nodeCounts = {};
+    function countNode(node) {
+      var n = 0;
+      (node.files || []).forEach(function (fl) { n += (fl.entry_count || (fl.entries ? fl.entries.length : 0)); });
+      (node.children || []).forEach(function (ch) { n += countNode(ch); });
+      nodeCounts[node.path] = n;
+      return n;
+    }
+
+    function renderCatNode(node, depth) {
+      var catKey = "cat:" + node.path;
+      var isCatOpen = !!expanded[catKey];
+      var isCatActive = sel && sel.type === "category" && sel.name === node.path;
+      var catCount = nodeCounts[node.path] || 0;
+      var directFiles = (node.cat && node.cat.files) ? node.cat.files : [];
 
       tree.push(h("div", {
         key: catKey,
         style: {
           display: "flex", alignItems: "center", gap: "4px", padding: "4px 8px", cursor: "pointer", fontSize: "13px", fontWeight: 500, borderRadius: "4px",
+          paddingLeft: (8 + depth * 14) + "px",
           background: isCatActive ? "rgba(59,130,246,0.15)" : "transparent",
         },
         onClick: function () {
           toggle(catKey);
-          if (props.onSelectNode) props.onSelectNode({ type: "category", name: cat.category, fileCount: (cat.files || []).length });
+          if (props.onSelectNode) props.onSelectNode({ type: "category", name: node.path, fileCount: directFiles.length });
         },
       },
         h("span", { style: { fontSize: "10px", color: "#888", width: "12px" } }, isCatOpen ? "▼" : "▶"),
-        h("span", { style: Object.assign({ paddingLeft: (catDepth(cat.category) - 1) * 14 + "px" }, isCatActive ? { color: "#3b82f6" } : {}) }, catLabel(cat.category) || "(未分类)"),
+        h("span", { style: isCatActive ? { color: "#3b82f6" } : {} }, node.name || "(未分类)"),
         h("span", { style: { fontSize: "10px", color: "#888", marginLeft: "4px" } }, String(catCount))
       ));
 
-      if (isCatOpen && cat.files) {
-        cat.files.forEach(function (file) {
-          var fileKey = "file:" + cat.category + ":" + file.id;
+      if (isCatOpen) {
+        node.children.forEach(function (ch) { renderCatNode(ch, depth + 1); });
+        directFiles.forEach(function (file) {
+          var fileKey = "file:" + node.path + ":" + file.id;
           var isFileOpen = !!expanded[fileKey];
           var isFileActive = sel && sel.type === "file" && sel.id === file.id;
 
@@ -107,11 +140,12 @@
             key: fileKey,
             style: {
               display: "flex", alignItems: "center", gap: "4px", padding: "4px 16px", cursor: "pointer", fontSize: "13px", borderRadius: "4px",
+              paddingLeft: (16 + (depth + 1) * 14) + "px",
               background: isFileActive ? "rgba(59,130,246,0.15)" : "transparent",
             },
             onClick: function () {
               toggle(fileKey);
-              if (props.onSelectNode) props.onSelectNode({ type: "file", id: file.id, title: file.title || file.path, category: cat.category, dirty: !!file.dirty, entryCount: file.entries ? file.entries.length : (file.entry_count || 0) });
+              if (props.onSelectNode) props.onSelectNode({ type: "file", id: file.id, title: file.title || file.path, category: node.path, dirty: !!file.dirty, entryCount: file.entries ? file.entries.length : (file.entry_count || 0) });
             },
           },
             h("span", { style: { fontSize: "10px", color: "#888", width: "12px" } }, isFileOpen ? "▼" : "▶"),
@@ -126,6 +160,7 @@
                 key: "entry:" + entry.id,
                 style: {
                   padding: "3px 8px 3px 32px", cursor: "pointer", fontSize: "12px", borderRadius: "4px", marginLeft: "20px",
+                  paddingLeft: (32 + depth * 14) + "px",
                   background: isEntryActive ? "rgba(59,130,246,0.15)" : "transparent",
                   color: isEntryActive ? "#3b82f6" : "inherit",
                 },
@@ -135,7 +170,11 @@
           }
         });
       }
-    });
+    }
+
+    var roots = buildCatTree(st.data.categories);
+    roots.forEach(countNode);
+    roots.forEach(function (root) { renderCatNode(root, 0); });
 
     return h("div", { style: { overflowY: "auto", flex: 1 } }, tree);
   }
