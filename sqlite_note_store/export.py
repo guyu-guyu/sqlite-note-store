@@ -176,6 +176,59 @@ def _clean_managed_dirs(out_root: Path, conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _category_tree(groups: list[storage.GroupRow]) -> list[dict[str, Any]]:
+    """Build a nested category tree from flat category paths.
+
+    Node shape: {"name": str, "path": str, "groups": [GroupRow],
+                 "children": [node]}.  Groups with an empty category are
+    filed under the 'uncategorized' root.
+    """
+    roots: list[dict[str, Any]] = []
+    by_path: dict[str, dict[str, Any]] = {}
+
+    for g in groups:
+        segments = [s for s in (g.category or "").split("/") if s] or ["uncategorized"]
+        parent_children = roots
+        parent_path = ""
+        for i, seg in enumerate(segments):
+            node_path = f"{parent_path}/{seg}" if parent_path else seg
+            node = by_path.get(node_path)
+            if node is None:
+                node = {"name": seg, "path": node_path, "groups": [], "children": []}
+                by_path[node_path] = node
+                parent_children.append(node)
+            if i == len(segments) - 1:
+                node["groups"].append(g)
+            parent_path = node_path
+            parent_children = node["children"]
+    return roots
+
+
+def _render_tree(
+    nodes: list[dict[str, Any]],
+    depth: int,
+    lines: list[str],
+    counts: dict[int, int],
+) -> None:
+    """Depth-first tree renderer.  depth 0 = '## name' heading, deeper
+    levels indent 2 spaces per level; groups are leaves."""
+    for node in nodes:
+        if depth == 0:
+            lines.append(f"## {node['name']}")
+            lines.append("")
+        else:
+            lines.append("  " * (depth - 1) + f"- {node['name']}")
+        indent = "  " * depth
+        for g in sorted(node["groups"], key=lambda r: r.slug):
+            marker = " *(dirty)*" if g.dirty else ""
+            lines.append(
+                f"{indent}- [{g.title or g.slug}]({g.path}) — {counts.get(g.id, 0)} entries{marker}"
+            )
+        if node["children"]:
+            _render_tree(node["children"], depth + 1, lines, counts)
+        lines.append("")
+
+
 def _build_index_markdown(conn: sqlite3.Connection) -> str:
     """Human-readable summary. Not a source of truth; safe to regenerate."""
     lines: list[str] = ["# Note Repository Index", ""]
@@ -193,23 +246,14 @@ def _build_index_markdown(conn: sqlite3.Connection) -> str:
     )
     lines.append("")
 
-    # Group by category.
-    by_cat: dict[str, list[storage.GroupRow]] = {}
-    for g in groups:
-        by_cat.setdefault(g.category, []).append(g)
-
-    for category in sorted(by_cat):
-        lines.append(f"## {category}")
-        lines.append("")
-        for g in sorted(by_cat[category], key=lambda r: r.slug):
-            entry_count = conn.execute(
-                "SELECT COUNT(*) FROM entries WHERE group_id = ?", (g.id,)
-            ).fetchone()[0]
-            marker = " *(dirty)*" if g.dirty else ""
-            lines.append(
-                f"- [{g.title or g.slug}]({g.path}) — {entry_count} entries{marker}"
-            )
-        lines.append("")
+    # Group by category — rendered as a nested tree.
+    counts = {
+        r["group_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT group_id, COUNT(*) AS n FROM entries GROUP BY group_id"
+        )
+    }
+    _render_tree(_category_tree(groups), 0, lines, counts)
 
     if cold_entries:
         lines.append("## cold-storage")

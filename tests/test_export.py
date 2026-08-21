@@ -262,3 +262,32 @@ def test_import_multilevel_category_preserves_path(tmp_path):
     assert row is not None
     assert row.category == "game/br"
     conn.close()
+
+
+def test_index_renders_category_tree(tmp_path):
+    """INDEX renders a nested category tree with indentation."""
+    conn = schema.connect(tmp_path / "db")
+    storage.upsert_group(
+        conn, path="game/br/flow.md", category="game/br", slug="flow",
+        title="Flow", tags=[], dirty=True,
+        created="2026-01-01T00:00:00+00:00", updated="2026-01-01T00:00:00+00:00",
+    )
+    storage.append_entry(conn, storage.get_group_by_path(conn, "game/br/flow.md").id,
+                         header="h", content="c")
+    storage.upsert_group(
+        conn, path="game/fps/weapon.md", category="game/fps", slug="weapon",
+        title="Weapon", tags=[], dirty=False,
+        created="2026-01-02T00:00:00+00:00", updated="2026-01-02T00:00:00+00:00",
+    )
+    storage.append_entry(conn, storage.get_group_by_path(conn, "game/fps/weapon.md").id,
+                         header="h", content="c")
+    conn.commit()
+
+    text = export._build_index_markdown(conn)
+    conn.close()
+
+    assert "## game" in text
+    assert "- br" in text
+    assert "  - [Flow](game/br/flow.md) — 1 entries *(dirty)*" in text
+    assert "- fps" in text
+    assert "  - [Weapon](game/fps/weapon.md) — 1 entries" in text
