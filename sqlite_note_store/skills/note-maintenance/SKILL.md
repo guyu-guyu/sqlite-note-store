@@ -224,7 +224,7 @@ platforms: [linux, macos, windows]
 4. 其他组用 `note_write(title=..., content=..., category=同分类)` 建成新组，title 反映子主题
 5. **不要**把所有条目都留在原组里指望 Python 自动拆——Python 不会
 
-**B. 分类超 50 组（在 `overpopulated_categories` 里）→ 合并 / 迁移 / 归档三选一**
+**B. 节点超 50 子项（在 `overpopulated_categories` 里）→ 合并 / 迁移 / 归档三选一**
 
 `overpopulated_categories[i].direct_groups` 按创建日期升序，**最前面的是最旧的**，优先处理它们：
 

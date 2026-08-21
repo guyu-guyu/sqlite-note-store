@@ -716,7 +716,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
 
     def _tool_note_move(self, args: dict[str, Any]) -> dict[str, Any]:
         path = args["path"]
-        new_category = (args.get("new_category") or "").strip() or "uncategorized"
+        new_category = (args.get("new_category") or "").strip().strip("/") or "uncategorized"
         row = storage.get_group_by_path(self._conn, path)
         if row is None:
             return {"error": f"note not found: {path}"}
@@ -732,8 +732,8 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "category": new_category, "group_id": row.id}
 
     def _tool_note_rename_category(self, args: dict[str, Any]) -> dict[str, Any]:
-        old_category = (args.get("old_category") or "").strip()
-        new_category = (args.get("new_category") or "").strip()
+        old_category = (args.get("old_category") or "").strip().strip("/")
+        new_category = (args.get("new_category") or "").strip().strip("/")
         if not old_category or not new_category:
             return {"error": "old_category and new_category are required"}
         if old_category == new_category:

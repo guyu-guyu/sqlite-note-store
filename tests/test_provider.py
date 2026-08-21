@@ -342,3 +342,12 @@ def test_maintain_detects_overpopulated_intermediate_node(tmp_path):
     dirty = _call(p, "note_maintain")["dirty_groups"]
     assert "game/A.md" in dirty  # slug 保留大小写
     p.shutdown()
+
+
+def test_note_move_normalizes_trailing_slash(tmp_path):
+    p = _new_provider(tmp_path)
+    r = _call(p, "note_write", title="Flow", content="body", category="game/br")
+    moved = _call(p, "note_move", path=r["path"], new_category="game/card/")
+    assert moved["path"] == "game/card/Flow.md"  # no double slash
+    assert moved["category"] == "game/card"
+    p.shutdown()
