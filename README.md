@@ -9,7 +9,7 @@ Hermes Agent 的 SQLite 后端记忆库插件。权威存储放在单个 SQLite 
 ## 特性
 
 - **单文件 SQLite 权威存储** — 一次写入 = 一行 INSERT/UPDATE + FTS5 索引同步，不再重写整个 md 文件、不再全仓 FTS rebuild
-- **9 个 LLM 工具** — `note_search` / `note_write` / `note_read` / `note_read_group` / `note_use` / `note_recall` / `note_comment` / `note_maintain` / `note_rewrite`
+- **11 个 LLM 工具** — `note_search` / `note_write` / `note_read` / `note_read_group` / `note_use` / `note_recall` / `note_comment` / `note_maintain` / `note_rewrite` / `note_move` / `note_rename_category`
 - **随时导出成 Markdown 目录** — 生成可 grep、可 vim 打开的目录树
 - **随时从 Markdown 目录导入** — 支持任意符合投影结构的 md 目录一键迁入
 - **Round-trip 无损** — 有单元测试断言 export→import→export 位对位相等
@@ -102,8 +102,11 @@ Fall back to `note_search(query)` when the index doesn't match.
 - [Rust 常用命令](coding/rust-commands.md) — 3 entries *(dirty)*
 
 ## game
-- [卡牌BR战斗流程](game/br-flow.md) — 8 entries
-- [局外系统](game/meta.md) — 12 entries
+- br
+  - [卡牌BR战斗流程](game/br/br-flow.md) — 8 entries
+  - [局外系统](game/br/meta.md) — 12 entries *(dirty)*
+- fps
+  - [武器平衡](game/fps/weapon.md) — 3 entries
 
 ## cold-storage
 - [2026-07-15.md](cold-storage/2026-07-15.md) — 23 entries
@@ -141,7 +144,7 @@ python -m sqlite_note_store export /tmp/view --no-index  # 跳过 INDEX.md
 
 ## 工具形态
 
-以下是完整的 9 个工具的签名。
+以下是完整的 11 个工具的签名。
 
 ### `note_search(query, limit=5)`
 
@@ -193,6 +196,14 @@ python -m sqlite_note_store export /tmp/view --no-index  # 跳过 INDEX.md
 
 **唯一能清 dirty 的工具**。传入 `entries=[{header, content, last_used?}, ...]`，整个组的条目被这一列表替换，组标 `dirty: false`，所有 comments 被消费。`entries=[]` 删除组。
 
+### `note_move(path, new_category)`
+
+把组移动到另一个分类（slug/文件名不变）。用于层级维护：上提、下移、合并分类。目标 path 已存在时报错（先合并或换分类）。**不标脏**——内容没变，只是位置变。
+
+### `note_rename_category(old_category, new_category)`
+
+重命名一个分类路径（精确匹配），该分类下的所有组同步改前缀。**子分类不受影响**；移动整个子树请用 `note_move` 逐个搬。任何目标 path 冲突则整体中止。
+
 ### 组/分类编辑（Dashboard API）
 
 除了上述 LLM 工具，provider 还通过 HTTP API 暴露了组和分类的管理能力，供 Web 看板使用（路由名沿用历史术语 file，对应存储概念 group）：
@@ -217,7 +228,7 @@ sqlite_note_store/
 ├── markdown_io.py       — parse_file() / render_file() / entry ⇋ row
 ├── storage.py           — CRUD + FTS 搜索 + 冷迁移 SQL
 ├── export.py            — SQLite ⇋ 目录树的双向桥
-├── provider.py          — MemoryProvider 门面类 + 9 个 tool 处理器 + Dashboard API
+├── provider.py          — MemoryProvider 门面类 + 11 个 tool 处理器 + Dashboard API
 ├── plugin.yaml          — 元数据 + hooks
 ├── dashboard/
 │   └── dist/index.js    — 前端 bundle（统计 + INDEX 树 + 编辑器 + 搜索 + 冷存储 + 新建条目弹窗）
@@ -258,6 +269,7 @@ python -m pytest -v
 | 保留隐式关联性 | 维护时用 `note_read_group(path)` 一次拉整组；INDEX 用 group 作聚类锚 |
 | 评论是 ephemeral TODO | `note_comment` 追加 JSON + 标脏；`note_rewrite` 自动清空 |
 | 无 pip 依赖 | `plugin.yaml: pip_dependencies: []` |
+| 层级由 LLM 维护，代码只检测报告 | `note_maintain` 返回 `deep_categories` + `hierarchy_summary`；深度不强制 |
 
 ## 已知边界
 

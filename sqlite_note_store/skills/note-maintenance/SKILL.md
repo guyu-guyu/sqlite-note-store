@@ -1,6 +1,6 @@
 ---
 name: note-maintenance
-description: 维护 SQLite 记忆库 — 读取脏组的所有条目，消化评论，合并去重，拆分超大组，迁移错分类条目，通过 note_rewrite 保存并清除脏标记。
+description: 维护 SQLite 记忆库 — 读取脏组的所有条目，消化评论，合并去重，拆分超大组，迁移错分类条目，维护分类层级（深度 ≤ 3），通过 note_rewrite / note_move / note_rename_category 保存并清除脏标记。
 platforms: [linux, macos, windows]
 ---
 
@@ -13,6 +13,8 @@ platforms: [linux, macos, windows]
 - 用户主动要求维护笔记库（"整理一下笔记"、"处理脏组"、"维护记忆"）
 - `note_maintain` 返回 `dirty_groups` 非空
 - `note_maintain` 返回 `oversized_groups` 或 `overpopulated_categories` 非空
+- `note_maintain` 返回 `deep_categories` 非空（层级过深，建议上提整理）
+- `note_maintain` 返回 `overpopulated_categories`（含中间节点）非空
 - 定期维护（例如每日/每周任务）
 
 ## 数据模型
@@ -31,7 +33,7 @@ platforms: [linux, macos, windows]
 - **`path`** 是 `category/slug.md` 格式的字符串标识符（如 `pubgm-lua/取日志.md`），不是磁盘文件路径——它是 SQLite `groups` 表的一列
 - **`dirty`** 是 `groups` 表的布尔列，**组级**标记
 - **`comments`** 是 `entries` 表的 JSON 数组列，ephemeral TODO
-- **`category`** 是 `groups` 表的字符串列，不是文件系统目录
+- **`category`** 是 `groups` 表的字符串列，多段路径（如 `game/br`），对应导出目录的嵌套层级
 - **INDEX** 不存在于磁盘上——每轮对话由 `system_prompt_block()` 实时从 SQL 查询构建并注入 system prompt
 - **FTS5 索引** 由存储层在每次写入时自动同步，`note_rewrite` 后无需手动重建
 
@@ -119,6 +121,22 @@ platforms: [linux, macos, windows]
 
 ---
 
+## 层级规范（LLM 维护，代码不强制）
+
+分类是多段路径（`game/br/...`），形成 领域/主题/子主题 树。**深度与宽度由 LLM 维护**——代码只检测报告，不阻止、不强制：
+
+- **建议深度 ≤ 3 层**（领域/主题/子主题）。`note_maintain` 返回的 `deep_categories` 列出超过 3 层的分类路径，`hierarchy_summary` 给出每层节点数（`depth4+` 出现 = 该整理了）
+- **建议每节点 ≤ 50 子节点**（子分类 + 直接组）。`overpopulated_categories` 现在对每个节点统计，中间节点超限也会报告
+- **扩散读法**：从一条记忆出发向外检索时，先读同目录的组（最近），再看兄弟分类，最后才上探父分类——层级越近关联越强，不要在第一步就上探
+- **层级维护动作**（响应式，仅在检测报告提示时做，不主动重构）：
+  - 上提:`note_move(path, "父分类")` — 组提升一层
+  - 下移:`note_move(path, "父/新子分类")` — 组归入更细主题
+  - 合并分类:把 B 分类下所有组逐个 `note_move` 到 A，空分类随最后一个组移走自然消失
+  - 改名:`note_rename_category("旧路径", "新路径")` — 精确匹配，只改直接挂在该分类下的组，子分类不受影响；改整个子树请用 `note_move` 逐个搬
+  - 冲突时机械层会报错：目标 path 已存在 → 先 `note_rewrite` 合并或换分类
+
+---
+
 ## 完整工作流
 
 ### 第一步：探测
@@ -127,7 +145,9 @@ platforms: [linux, macos, windows]
 
 - `dirty_groups`: **脏组 path 列表**——你要处理的目标
 - `oversized_groups`: 单组渲染后超 50KB 的列表，`[{path, size_bytes, size_kb}]`——需要拆分
-- `overpopulated_categories`: 分类超 50 组的列表，`[{category, group_count, groups}]`——需要合并/迁移
+- `overpopulated_categories`: 超限节点的列表（中间节点也算），`[{category, child_count, subcategories, direct_groups}]`——需要合并/迁移
+- `deep_categories`: 深度超过 3 层的分类路径列表——需要上提整理
+- `hierarchy_summary`: 每层节点数统计（`depth1`…`depth4+`）——看层级形状
 - `cold_moved`: 自动清退到冷存储的条目数（从 `entries` 表迁移到 `cold_entries` 表）
 - `cold_batches_pruned`: 冷存储超限被删除的旧冷批次数
 
@@ -206,7 +226,7 @@ platforms: [linux, macos, windows]
 
 **B. 分类超 50 组（在 `overpopulated_categories` 里）→ 合并 / 迁移 / 归档三选一**
 
-`overpopulated_categories[i].groups` 按创建日期升序，**最前面的是最旧的**，优先处理它们：
+`overpopulated_categories[i].direct_groups` 按创建日期升序，**最前面的是最旧的**，优先处理它们：
 
 - **合并**：如果发现两个组主题重复/相似 → 把 B 的条目并入 A → `note_rewrite(A, entries=[A条目+B条目])` + `note_rewrite(B, entries=[])`（删空 B）
 - **迁移**：如果某组其实属于其他分类 → 该组里每个条目用 `note_write(category=目标分类)` 写到新分类 → 原组 `note_rewrite(entries=[])` 删除
