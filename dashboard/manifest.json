@@ -1,5 +1,5 @@
 {
-  "name": "notes",
+  "name": "sqlite-note-store",
   "label": "记忆笔记",
   "description": "查看并编辑 SQLite 记忆库 —— INDEX 树、条目编辑器、全文搜索、冷存储浏览",
   "icon": "BookOpen",
