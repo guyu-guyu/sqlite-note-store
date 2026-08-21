@@ -34,7 +34,7 @@ ln -sf /path/to/sqlite-note-store-plugin/README.md "${HERMES_HOME:-$HOME/.hermes
 # 3. 重启会话
 ```
 
-> **激活机制**：memory provider 只由 `memory.provider` 配置键激活，**不需要**（也不应该）出现在 `plugins.enabled` 列表里——Hermes 会把含 memory provider 注册的插件目录标记为 exclusive，交给专门的 memory 发现系统处理。
+> **激活机制**：memory provider 的**激活**只由 `memory.provider` 配置键决定，与 `plugins.enabled` 无关。但**如果要使用 Web 看板（dashboard）**，插件名（manifest 的 `name`）**必须出现在 `plugins.enabled` 里**——dashboard 前端用它对用户插件做门控，不在列表里的插件 tab 会被静默过滤（见下方故障排查）。
 >
 > **验证**：在 hermes-agent 仓库根目录运行 `python -c "from plugins.memory import discover_memory_providers; print([p[0] for p in discover_memory_providers()])"`，应包含 `sqlite-note-store`。若加载失败，启动日志会包含 `Failed to load memory provider` 或 `Memory provider ... initialize failed`（加载失败只是降级跳过，不会阻塞 Hermes 启动，所以**没报错 ≠ 已加载**，务必查配置与日志）。
 
@@ -46,6 +46,98 @@ pip install -e .
 ```
 
 启用后，第一次会话开始时 SQLite 数据库会自动创建，维护 skill 自动安装。
+
+## 故障排查
+
+> 经验来自真实安装踩坑。Hermes 对插件加载失败是**静默降级**（记日志 + 跳过，不阻塞启动），所以排查的第一原则是：**看日志、按名验证，别信“没报错”**。
+
+### 1. 插件装了但 LLM 工具不出现（memory provider 未加载）
+
+**① 目录结构必须扁平**（最常见错误）：
+
+```text
+# ✅ 正确：插件目录根直接是包内容
+$HERMES_HOME/plugins/sqlite-note-store/
+├── plugin.yaml      # 在根目录
+├── __init__.py      # register(ctx) 在根目录
+├── provider.py      # SQLiteNoteStoreProvider + register
+├── schema.py / storage.py / export.py / markdown_io.py
+├── skills/
+└── dashboard/       # 看板（可选）
+
+# ❌ 错误：把整个仓库 clone/拷贝进去（含 .git、tests/、docs/、setup.py），
+#    plugin.yaml 埋在 sqlite_note_store/ 子目录里 → Hermes 找不到 manifest，
+#    发现机制要求的是扁平结构
+```
+
+**② 激活开关**：`config.yaml` 必须设置 `memory.provider: sqlite-note-store`（名字与 `provider.name`、目录名完全一致）。这是唯一激活开关。
+
+**③ 路径**：插件必须装在 `${HERMES_HOME:-$HOME/.hermes}/plugins/` 下，确认 `echo $HERMES_HOME` 的实际值。
+
+**④ 验证与日志**：
+
+```bash
+# 在 hermes-agent 仓库根目录：确认发现
+python -c "from plugins.memory import discover_memory_providers; print([p[0] for p in discover_memory_providers()])"
+
+# 启动日志里搜这些关键词定位失败原因
+#   Failed to load memory provider ...   → 导入/注册异常（日志会带具体错误）
+#   Memory provider ... initialize failed → initialize() 抛异常
+#   Rejected memory provider ...         → 已有其他外部 provider 激活（只能有一个）
+```
+
+### 2. dashboard 没有「记忆笔记」面板
+
+Hermes 扫描 `$HERMES_HOME/plugins/<name>/dashboard/manifest.json` 发现看板插件，但有三道门控，**环环相扣**，全部满足才会显示：
+
+**① manifest 的 `name` 必须等于 `plugins.enabled` 里的名字**：
+
+```jsonc
+// dashboard/manifest.json
+{ "name": "sqlite-note-store", ... }  // 必须与 plugins.enabled 一致
+```
+
+前端门控（`_is_active`）拿 manifest 的 name 与 `plugins.enabled` 比对——不一致时 tab 被静默过滤。
+
+**② 前端 bundle 的注册名与 API 前缀必须用 manifest name**：
+
+```js
+// dashboard/dist/index.js
+var API = "/api/plugins/sqlite-note-store";            // 不是 /api/plugins/notes
+window.__HERMES_PLUGINS__.register("sqlite-note-store", NotesPage);  // 不是 "notes"
+```
+
+宿主按 manifest name 期待 `register(<name>, Component)`；注册名不匹配时面板报“插件脚本未调用 register()”。API 路由也挂在 `/api/plugins/<manifest name>/` 下。
+
+**③ 改了 manifest / 新增插件后，dashboard 进程要重启**：
+
+- 插件列表有进程内缓存：`GET /api/dashboard/plugins/rescan`（需登录）可强制重扫静态资源，无需重启
+- 但 **API 路由只在启动时挂载**（`_mount_plugin_api_routes`）——改名/新增后必须重启：
+
+```bash
+hermes dashboard --stop
+nohup hermes dashboard --host 0.0.0.0 --port 9119 --no-open > /tmp/dashboard.log 2>&1 &
+```
+
+**④ 登录与验证**（自托管 basic auth）：
+
+```bash
+PASS=$(grep PASSWORD ~/.hermes/dashboard-credentials.txt | cut -d= -f2)
+curl -c /tmp/cookie.txt -X POST http://localhost:9119/auth/password-login \
+  -H "Content-Type: application/json" \
+  -d "{\"provider\":\"basic\",\"username\":\"admin\",\"password\":\"$PASS\"}"
+curl -b /tmp/cookie.txt http://localhost:9119/api/dashboard/plugins          # 应含 sqlite-note-store
+curl -b /tmp/cookie.txt http://localhost:9119/api/plugins/sqlite-note-store/stats  # 应返回 JSON
+curl -b /tmp/cookie.txt -o /dev/null -w "%{http_code}\n" \
+  http://localhost:9119/dashboard-plugins/sqlite-note-store/dist/index.js   # 应 200
+```
+
+### 3. 改了代码不生效？
+
+按 README 方式一（符号链接）安装时，仓库改动**实时同步**到插件目录：
+- 后端（provider 等 .py）→ 重启 Hermes 会话生效
+- dashboard manifest / dist → 重启 dashboard 进程生效（或先 rescan 试静态资源）
+- 维护 skill → 下次会话 initialize() 时按 mtime 自动同步
 
 ## 数据在哪里
 
