@@ -453,7 +453,9 @@ def delete_file(file_id: int):
 
 @router.put("/categories")
 def rename_category(body: CategoryUpdate):
-    """重命名分类——批量更新该分类下所有组的 category + path。"""
+    """重命名分类——批量更新该分类下所有组的 category + path。
+    支持多段路径（精确匹配整个分类路径，如 game/br → game/card）；
+    子分类（更深的路径）不受影响。"""
     conn = _conn()
     try:
         old_name = body.old_name.strip()

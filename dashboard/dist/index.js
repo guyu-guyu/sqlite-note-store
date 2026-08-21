@@ -35,6 +35,9 @@
     return Math.floor(d / 86400) + "d";
   }
 
+  function catDepth(name) { return (name || "").split("/").filter(Boolean).length; }
+  function catLabel(name) { var s = (name || "").split("/").filter(Boolean); return s[s.length - 1] || name; }
+
   // ── INDEX 树 ──────────────────────────────────────────────────────────
 
   function IndexTree(props) {
@@ -90,7 +93,7 @@
         },
       },
         h("span", { style: { fontSize: "10px", color: "#888", width: "12px" } }, isCatOpen ? "▼" : "▶"),
-        h("span", { style: isCatActive ? { color: "#3b82f6" } : {} }, cat.category || "(未分类)"),
+        h("span", { style: Object.assign({ paddingLeft: (catDepth(cat.category) - 1) * 14 + "px" }, isCatActive ? { color: "#3b82f6" } : {}) }, catLabel(cat.category) || "(未分类)"),
         h("span", { style: { fontSize: "10px", color: "#888", marginLeft: "4px" } }, String(catCount))
       ));
 
