@@ -34,8 +34,8 @@ def _cmd_import(args: argparse.Namespace) -> int:
     stats = export_mod.import_from_directory(conn, src, replace=args.replace)
     conn.close()
     print(
-        f"imported: files={stats['files']} entries={stats['entries']} "
-        f"cold_files={stats['cold_files']} cold_entries={stats['cold_entries']}"
+        f"imported: groups={stats['groups']} entries={stats['entries']} "
+        f"cold_batches={stats['cold_batches']} cold_entries={stats['cold_entries']}"
     )
     return 0
 
@@ -49,8 +49,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
     )
     conn.close()
     print(
-        f"exported: files={stats['files']} entries={stats['entries']} "
-        f"cold_files={stats['cold_files']} cold_entries={stats['cold_entries']} → {dst}"
+        f"exported: groups={stats['groups']} entries={stats['entries']} "
+        f"cold_batches={stats['cold_batches']} cold_entries={stats['cold_entries']} → {dst}"
     )
     return 0
 
@@ -61,13 +61,13 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(f"no SQLite store at {root}/{schema.DB_FILENAME}")
         return 1
     conn = schema.connect(root)
-    files = storage.list_files(conn)
-    dirty = [f for f in files if f.dirty]
+    groups = storage.list_groups(conn)
+    dirty = [g for g in groups if g.dirty]
     entries = storage.count_active_entries(conn)
     cold = storage.count_cold_entries(conn)
     conn.close()
     print(f"root:    {root}")
-    print(f"files:   {len(files)} ({len(dirty)} dirty)")
+    print(f"groups:  {len(groups)} ({len(dirty)} dirty)")
     print(f"entries: {entries} active / {cold} cold")
     return 0
 

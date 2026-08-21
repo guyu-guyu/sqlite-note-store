@@ -3,8 +3,8 @@
 挂载在 /api/plugins/notes/ 下。
 
 此层是 SQLite 存储的薄封装层：
-  - GET  /index          → INDEX 树（分类 > 文件 > 条目头）
-  - GET  /files/{id}     → 文件详情（含所有条目）
+  - GET  /index          → INDEX 树（分类 > 组 > 条目头）
+  - GET  /files/{id}     → 组详情（含所有条目；路由名沿用历史术语 file，对应存储概念 group）
   - GET  /entries/{id}   → 单条目内容
   - POST /entries        → 新建条目
   - PUT  /entries/{id}   → 编辑条目（header/content/tags）
@@ -92,19 +92,19 @@ class EntryUpdate(BaseModel):
 
 class EntryCreate(BaseModel):
     """新建条目时的请求体。"""
-    file_id: int = Field(..., description="目标文件 ID")
+    file_id: int = Field(..., description="目标组 ID（路由/字段名沿用历史术语 file，对应存储概念 group）")
     header: str = Field(..., description="条目标题")
     content: str = Field("", description="条目正文")
 
 
 class FileCreate(BaseModel):
-    """新建文件时的请求体。"""
+    """新建组时的请求体。"""
     category: str = Field(..., description="分类名（即文件夹名）")
-    title: str = Field(..., description="文件标题（将用作 markdown 的 title 字段）")
+    title: str = Field(..., description="组标题（将用作 markdown 的 title 字段）")
 
 
 class FileUpdate(BaseModel):
-    """编辑文件时的请求体。所有字段可选。"""
+    """编辑组时的请求体。所有字段可选。"""
     title: Optional[str] = None
     category: Optional[str] = None
 
@@ -134,7 +134,7 @@ def _entry_dict(row: sqlite3.Row) -> dict:
     return d
 
 
-def _file_dict(row: sqlite3.Row) -> dict:
+def _group_dict(row: sqlite3.Row) -> dict:
     d = _row_to_dict(row)
     try:
         d["tags"] = json.loads(d.get("tags") or "[]")
@@ -151,14 +151,14 @@ def _now_iso() -> str:
 # FTS5 同步辅助
 # ---------------------------------------------------------------------------
 
-_FTS_COLUMNS = "header, content, category, file_title, file_path"
+_FTS_COLUMNS = "header, content, category, group_title, group_path"
 
 
 def _fts_sync_entry(conn: sqlite3.Connection, entry_id: int) -> None:
     """单条目的 FTS5 同步——编辑/新建后调用。"""
     row = conn.execute(
-        """SELECT e.id, e.header, e.content, f.category, f.title, f.path
-           FROM entries e JOIN files f ON e.file_id = f.id
+        """SELECT e.id, e.header, e.content, g.category, g.title, g.path
+           FROM entries e JOIN groups g ON e.group_id = g.id
            WHERE e.id = ?""",
         (entry_id,),
     ).fetchone()
@@ -207,29 +207,29 @@ def get_index():
     conn = _conn()
     try:
         files = conn.execute(
-            """SELECT f.id, f.path, f.category, f.slug, f.title, f.tags,
-                      f.dirty, f.created, f.updated,
-                      (SELECT COUNT(*) FROM entries e WHERE e.file_id = f.id) AS entry_count
-               FROM files f
-               ORDER BY f.category, f.slug"""
+            """SELECT g.id, g.path, g.category, g.slug, g.title, g.tags,
+                      g.dirty, g.created, g.updated,
+                      (SELECT COUNT(*) FROM entries e WHERE e.group_id = g.id) AS entry_count
+               FROM groups g
+               ORDER BY g.category, g.slug"""
         ).fetchall()
 
         # 按分类分组
         categories: dict[str, list] = {}
         file_ids = [f["id"] for f in files]
         # 批量取所有条目头
-        entries_by_file: dict[int, list] = {}
+        entries_by_group: dict[int, list] = {}
         if file_ids:
             placeholders = ",".join("?" * len(file_ids))
             all_entries = conn.execute(
-                f"""SELECT id, file_id, header, content, order_index
+                f"""SELECT id, group_id, header, content, order_index
                     FROM entries
-                    WHERE file_id IN ({placeholders})
-                    ORDER BY file_id, order_index""",
+                    WHERE group_id IN ({placeholders})
+                    ORDER BY group_id, order_index""",
                 file_ids,
             ).fetchall()
             for e in all_entries:
-                entries_by_file.setdefault(e["file_id"], []).append({
+                entries_by_group.setdefault(e["group_id"], []).append({
                     "id": e["id"],
                     "header": e["header"],
                     "preview": (e["content"][:120] + "...") if len(e["content"]) > 120 else e["content"],
@@ -240,9 +240,9 @@ def get_index():
             cat = f["category"]
             if cat not in categories:
                 categories[cat] = []
-            fd = _file_dict(f)
+            fd = _group_dict(f)
             fd["entry_count"] = f["entry_count"]
-            fd["entries"] = entries_by_file.get(f["id"], [])
+            fd["entries"] = entries_by_group.get(f["id"], [])
             categories[cat].append(fd)
 
         for cat, cat_files in sorted(categories.items()):
@@ -255,17 +255,17 @@ def get_index():
 
 @router.get("/files/{file_id}")
 def get_file(file_id: int):
-    """文件详情——含完整条目列表（含 content）。"""
+    """组详情——含完整条目列表（含 content）。路由名沿用历史术语 file。"""
     conn = _conn()
     try:
         f = conn.execute(
-            "SELECT * FROM files WHERE id = ?", (file_id,)
+            "SELECT * FROM groups WHERE id = ?", (file_id,)
         ).fetchone()
         if f is None:
-            raise HTTPException(404, detail=f"文件 {file_id} 不存在")
-        fd = _file_dict(f)
+            raise HTTPException(404, detail=f"组 {file_id} 不存在")
+        fd = _group_dict(f)
         entries = conn.execute(
-            """SELECT * FROM entries WHERE file_id = ? ORDER BY order_index""",
+            """SELECT * FROM entries WHERE group_id = ? ORDER BY order_index""",
             (file_id,),
         ).fetchall()
         fd["entries"] = [_entry_dict(e) for e in entries]
@@ -280,8 +280,8 @@ def get_entry(entry_id: int):
     conn = _conn()
     try:
         row = conn.execute(
-            """SELECT e.*, f.path AS file_path, f.category, f.title AS file_title, f.id AS file_id
-               FROM entries e JOIN files f ON e.file_id = f.id
+            """SELECT e.*, g.path AS file_path, g.category, g.title AS file_title, g.id AS file_id
+               FROM entries e JOIN groups g ON e.group_id = g.id
                WHERE e.id = ?""",
             (entry_id,),
         ).fetchone()
@@ -294,37 +294,37 @@ def get_entry(entry_id: int):
 
 @router.post("/entries")
 def create_entry(body: EntryCreate):
-    """新建条目。自动追加到文件末尾，更新 updated 时间戳。"""
+    """新建条目。自动追加到组末尾，更新 updated 时间戳。"""
     conn = _conn()
     try:
-        f = conn.execute("SELECT id FROM files WHERE id = ?", (body.file_id,)).fetchone()
+        f = conn.execute("SELECT id FROM groups WHERE id = ?", (body.file_id,)).fetchone()
         if f is None:
-            raise HTTPException(404, detail=f"文件 {body.file_id} 不存在")
+            raise HTTPException(404, detail=f"组 {body.file_id} 不存在")
 
         # 获取下一个 order_index
         max_idx = conn.execute(
-            "SELECT COALESCE(MAX(order_index), -1) FROM entries WHERE file_id = ?",
+            "SELECT COALESCE(MAX(order_index), -1) FROM entries WHERE group_id = ?",
             (body.file_id,),
         ).fetchone()[0]
         next_idx = max_idx + 1
 
         now = _now_iso()
         cursor = conn.execute(
-            """INSERT INTO entries (file_id, header, content, comments, order_index)
+            """INSERT INTO entries (group_id, header, content, comments, order_index)
                VALUES (?, ?, ?, '[]', ?)""",
             (body.file_id, body.header, body.content, next_idx),
         )
         entry_id = cursor.lastrowid or 0
 
-        # 更新文件 updated
-        conn.execute("UPDATE files SET updated = ? WHERE id = ?", (now, body.file_id))
+        # 更新组 updated
+        conn.execute("UPDATE groups SET updated = ? WHERE id = ?", (now, body.file_id))
 
         if entry_id:
             # FTS5 同步
             _fts_sync_entry(conn, entry_id)
 
         conn.commit()
-        log.info("Created entry %d in file %d", entry_id, body.file_id)
+        log.info("Created entry %d in group %d", entry_id, body.file_id)
         return {"id": entry_id, "message": "条目已创建"}
     finally:
         conn.close()
@@ -332,7 +332,7 @@ def create_entry(body: EntryCreate):
 
 @router.post("/files")
 def create_file(body: FileCreate):
-    """新建文件。根据 title 自动生成 slug，组合为 category/slug.md 路径。
+    """新建组。根据 title 自动生成 slug，组合为 category/slug.md 路径。
     如果路径已存在，返回 409 冲突。"""
     conn = _conn()
     try:
@@ -345,20 +345,20 @@ def create_file(body: FileCreate):
         category = body.category.strip() or "uncategorized"
         path = f"{category}/{slug}.md"
 
-        existing = conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
+        existing = conn.execute("SELECT id FROM groups WHERE path = ?", (path,)).fetchone()
         if existing is not None:
-            raise HTTPException(409, detail=f"文件已存在: {path}")
+            raise HTTPException(409, detail=f"组已存在: {path}")
 
         now = _now_iso()
         cursor = conn.execute(
-            """INSERT INTO files (path, category, slug, title, tags, dirty, created, updated)
+            """INSERT INTO groups (path, category, slug, title, tags, dirty, created, updated)
                VALUES (?, ?, ?, ?, '[]', 1, ?, ?)""",
             (path, category, slug, body.title, now, now),
         )
         file_id = cursor.lastrowid or 0
         conn.commit()
-        log.info("Created file %d: %s", file_id, path)
-        return {"id": file_id, "path": path, "message": "文件已创建"}
+        log.info("Created group %d: %s", file_id, path)
+        return {"id": file_id, "path": path, "message": "组已创建"}
     finally:
         conn.close()
 
@@ -368,7 +368,7 @@ def list_categories():
     """返回所有已有分类名（去重）。用于新建文件弹窗的分类下拉框。"""
     conn = _conn()
     try:
-        rows = conn.execute("SELECT DISTINCT category FROM files ORDER BY category").fetchall()
+        rows = conn.execute("SELECT DISTINCT category FROM groups ORDER BY category").fetchall()
         return {"categories": [r["category"] for r in rows]}
     finally:
         conn.close()
@@ -385,16 +385,16 @@ def _make_slug(title: str) -> str:
 
 @router.put("/files/{file_id}")
 def update_file(file_id: int, body: FileUpdate):
-    """编辑文件——改名（更新 title/slug/path）和/或移分类（更新 category/path）。
-    非空文件（含条目）也可以改名——改名不删除内容。"""
+    """编辑组——改名（更新 title/slug/path）和/或移分类（更新 category/path）。
+    非空组（含条目）也可以改名——改名不删除内容。"""
     conn = _conn()
     try:
         row = conn.execute(
-            "SELECT id, path, category, slug, title FROM files WHERE id = ?",
+            "SELECT id, path, category, slug, title FROM groups WHERE id = ?",
             (file_id,),
         ).fetchone()
         if row is None:
-            raise HTTPException(404, detail=f"文件 {file_id} 不存在")
+            raise HTTPException(404, detail=f"组 {file_id} 不存在")
 
         new_title = body.title if body.title is not None else row["title"]
         new_category = body.category.strip() if body.category is not None else row["category"]
@@ -406,54 +406,54 @@ def update_file(file_id: int, body: FileUpdate):
 
         # path 冲突检测（排除自身）
         clash = conn.execute(
-            "SELECT id FROM files WHERE path = ? AND id != ?", (new_path, file_id)
+            "SELECT id FROM groups WHERE path = ? AND id != ?", (new_path, file_id)
         ).fetchone()
         if clash is not None:
             raise HTTPException(409, detail=f"路径冲突: {new_path}")
 
         now = _now_iso()
         conn.execute(
-            "UPDATE files SET title = ?, category = ?, slug = ?, path = ?, updated = ? WHERE id = ?",
+            "UPDATE groups SET title = ?, category = ?, slug = ?, path = ?, updated = ? WHERE id = ?",
             (new_title, new_category, new_slug, new_path, now, file_id),
         )
         conn.commit()
-        log.info("Updated file %d: %s → %s", file_id, row["path"], new_path)
-        return {"id": file_id, "path": new_path, "message": "文件已更新"}
+        log.info("Updated group %d: %s → %s", file_id, row["path"], new_path)
+        return {"id": file_id, "path": new_path, "message": "组已更新"}
     finally:
         conn.close()
 
 
 @router.delete("/files/{file_id}")
 def delete_file(file_id: int):
-    """删除文件。仅允许删除空文件（无条目）——非空文件返回 409。"""
+    """删除组。仅允许删除空组（无条目）——非空组返回 409。"""
     conn = _conn()
     try:
         row = conn.execute(
-            "SELECT id, path FROM files WHERE id = ?", (file_id,)
+            "SELECT id, path FROM groups WHERE id = ?", (file_id,)
         ).fetchone()
         if row is None:
-            raise HTTPException(404, detail=f"文件 {file_id} 不存在")
+            raise HTTPException(404, detail=f"组 {file_id} 不存在")
 
         entry_count = conn.execute(
-            "SELECT COUNT(*) AS n FROM entries WHERE file_id = ?", (file_id,)
+            "SELECT COUNT(*) AS n FROM entries WHERE group_id = ?", (file_id,)
         ).fetchone()["n"]
         if entry_count > 0:
             raise HTTPException(
                 409,
-                detail=f"文件非空（含 {entry_count} 个条目），请先清空条目后再删除",
+                detail=f"组非空（含 {entry_count} 个条目），请先清空条目后再删除",
             )
 
-        conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        conn.execute("DELETE FROM groups WHERE id = ?", (file_id,))
         conn.commit()
-        log.info("Deleted empty file %d: %s", file_id, row["path"])
-        return {"id": file_id, "message": "文件已删除"}
+        log.info("Deleted empty group %d: %s", file_id, row["path"])
+        return {"id": file_id, "message": "组已删除"}
     finally:
         conn.close()
 
 
 @router.put("/categories")
 def rename_category(body: CategoryUpdate):
-    """重命名分类——批量更新该分类下所有文件的 category + path。"""
+    """重命名分类——批量更新该分类下所有组的 category + path。"""
     conn = _conn()
     try:
         old_name = body.old_name.strip()
@@ -462,33 +462,33 @@ def rename_category(body: CategoryUpdate):
             return {"message": "分类名未变更"}
 
         rows = conn.execute(
-            "SELECT id, path, slug, title FROM files WHERE category = ? ORDER BY id",
+            "SELECT id, path, slug, title FROM groups WHERE category = ? ORDER BY id",
             (old_name,),
         ).fetchall()
         if not rows:
             raise HTTPException(404, detail=f"分类 '{old_name}' 不存在或为空")
 
-        # 逐文件更新 path，检测冲突
+        # 逐组更新 path，检测冲突
         now = _now_iso()
         renamed = 0
         for r in rows:
             new_path = f"{new_name}/{r['slug']}.md"
             clash = conn.execute(
-                "SELECT id FROM files WHERE path = ? AND id != ?", (new_path, r["id"])
+                "SELECT id FROM groups WHERE path = ? AND id != ?", (new_path, r["id"])
             ).fetchone()
             if clash is not None:
                 raise HTTPException(
                     409,
-                    detail=f"路径冲突: {new_path}（可能与已有文件撞名）",
+                    detail=f"路径冲突: {new_path}（可能与已有组撞名）",
                 )
             conn.execute(
-                "UPDATE files SET category = ?, path = ?, updated = ? WHERE id = ?",
+                "UPDATE groups SET category = ?, path = ?, updated = ? WHERE id = ?",
                 (new_name, new_path, now, r["id"]),
             )
             renamed += 1
 
         conn.commit()
-        log.info("Renamed category '%s' → '%s' (%d files)", old_name, new_name, renamed)
+        log.info("Renamed category '%s' → '%s' (%d groups)", old_name, new_name, renamed)
         return {"old_name": old_name, "new_name": new_name, "files_updated": renamed}
     finally:
         conn.close()
@@ -496,19 +496,19 @@ def rename_category(body: CategoryUpdate):
 
 @router.delete("/categories/{category_name}")
 def delete_category(category_name: str):
-    """删除分类——仅允许删除空分类（无文件）。非空返回 409。"""
+    """删除分类——仅允许删除空分类（无组）。非空返回 409。"""
     conn = _conn()
     try:
-        file_count = conn.execute(
-            "SELECT COUNT(*) AS n FROM files WHERE category = ?", (category_name,)
+        group_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM groups WHERE category = ?", (category_name,)
         ).fetchone()["n"]
-        if file_count > 0:
+        if group_count > 0:
             raise HTTPException(
                 409,
-                detail=f"分类非空（含 {file_count} 个文件），请先清空文件后再删除",
+                detail=f"分类非空（含 {group_count} 个组），请先清空组后再删除",
             )
 
-        # 空分类在 files 表中没有行，无需 DELETE
+        # 空分类在 groups 表中没有行，无需 DELETE
         conn.commit()
         log.info("Deleted empty category '%s'", category_name)
         return {"category": category_name, "message": "分类已删除"}
@@ -518,11 +518,11 @@ def delete_category(category_name: str):
 
 @router.put("/entries/{entry_id}")
 def update_entry(entry_id: int, body: EntryUpdate):
-    """编辑条目。只更新传入的字段，自动更新文件 updated 时间戳。"""
+    """编辑条目。只更新传入的字段，自动更新所属组 updated 时间戳。"""
     conn = _conn()
     try:
         row = conn.execute(
-            "SELECT id, file_id FROM entries WHERE id = ?", (entry_id,)
+            "SELECT id, group_id FROM entries WHERE id = ?", (entry_id,)
         ).fetchone()
         if row is None:
             raise HTTPException(404, detail=f"条目 {entry_id} 不存在")
@@ -548,10 +548,10 @@ def update_entry(entry_id: int, body: EntryUpdate):
             params,
         )
 
-        # 更新文件 updated
+        # 更新所属组 updated
         conn.execute(
-            "UPDATE files SET updated = ? WHERE id = ?",
-            (_now_iso(), row["file_id"]),
+            "UPDATE groups SET updated = ? WHERE id = ?",
+            (_now_iso(), row["group_id"]),
         )
 
         # FTS5 同步
@@ -566,17 +566,17 @@ def update_entry(entry_id: int, body: EntryUpdate):
 
 @router.delete("/entries/{entry_id}")
 def delete_entry(entry_id: int):
-    """删除条目。自动重排文件内剩余条目的 order_index。"""
+    """删除条目。自动重排组内剩余条目的 order_index。"""
     conn = _conn()
     try:
         row = conn.execute(
-            "SELECT id, file_id, order_index FROM entries WHERE id = ?",
+            "SELECT id, group_id, order_index FROM entries WHERE id = ?",
             (entry_id,),
         ).fetchone()
         if row is None:
             raise HTTPException(404, detail=f"条目 {entry_id} 不存在")
 
-        file_id = row["file_id"]
+        group_id = row["group_id"]
         removed_idx = row["order_index"]
 
         # FTS5 索引删除
@@ -588,18 +588,18 @@ def delete_entry(entry_id: int):
         # 重排后续条目
         conn.execute(
             """UPDATE entries SET order_index = order_index - 1
-               WHERE file_id = ? AND order_index > ?""",
-            (file_id, removed_idx),
+               WHERE group_id = ? AND order_index > ?""",
+            (group_id, removed_idx),
         )
 
-        # 更新文件 updated
+        # 更新所属组 updated
         conn.execute(
-            "UPDATE files SET updated = ? WHERE id = ?",
-            (_now_iso(), file_id),
+            "UPDATE groups SET updated = ? WHERE id = ?",
+            (_now_iso(), group_id),
         )
 
         conn.commit()
-        log.info("Deleted entry %d from file %d", entry_id, file_id)
+        log.info("Deleted entry %d from group %d", entry_id, group_id)
         return {"id": entry_id, "message": "条目已删除"}
     finally:
         conn.close()
@@ -653,8 +653,8 @@ def search_entries(
         placeholders = ",".join("?" * len(id_list))
         rows = conn.execute(
             f"""SELECT e.id, e.header, e.content, e.last_used, e.comments,
-                      f.path AS file_path, f.category, f.title AS file_title, f.id AS file_id
-               FROM entries e JOIN files f ON e.file_id = f.id
+                      g.path AS file_path, g.category, g.title AS file_title, g.id AS file_id
+               FROM entries e JOIN groups g ON e.group_id = g.id
                WHERE e.id IN ({placeholders})
                ORDER BY e.id""",
             id_list,
@@ -684,28 +684,28 @@ def search_entries(
 
 @router.get("/cold")
 def get_cold():
-    """冷存储浏览——列出所有冷存储文件及其条目。"""
+    """冷存储浏览——列出所有冷存储批次及其条目。"""
     conn = _conn()
     try:
-        cold_files = conn.execute(
-            """SELECT cf.id, cf.filename, cf.created,
-                      (SELECT COUNT(*) FROM cold_entries ce WHERE ce.cold_file_id = cf.id) AS entry_count
-               FROM cold_files cf
-               ORDER BY cf.created DESC"""
+        cold_batches = conn.execute(
+            """SELECT cb.id, cb.filename, cb.created,
+                      (SELECT COUNT(*) FROM cold_entries ce WHERE ce.cold_batch_id = cb.id) AS entry_count
+               FROM cold_batches cb
+               ORDER BY cb.created DESC"""
         ).fetchall()
 
-        file_ids = [cf["id"] for cf in cold_files]
-        entries_by_file: dict[int, list] = {}
-        if file_ids:
-            placeholders = ",".join("?" * len(file_ids))
+        batch_ids = [cb["id"] for cb in cold_batches]
+        entries_by_batch: dict[int, list] = {}
+        if batch_ids:
+            placeholders = ",".join("?" * len(batch_ids))
             all_entries = conn.execute(
                 f"""SELECT * FROM cold_entries
-                    WHERE cold_file_id IN ({placeholders})
-                    ORDER BY cold_file_id, order_index""",
-                file_ids,
+                    WHERE cold_batch_id IN ({placeholders})
+                    ORDER BY cold_batch_id, order_index""",
+                batch_ids,
             ).fetchall()
             for e in all_entries:
-                entries_by_file.setdefault(e["cold_file_id"], []).append({
+                entries_by_batch.setdefault(e["cold_batch_id"], []).append({
                     "id": e["id"],
                     "header": e["header"],
                     "content": e["content"],
@@ -715,11 +715,12 @@ def get_cold():
                 })
 
         result = []
-        for cf in cold_files:
-            d = _row_to_dict(cf)
-            d["entries"] = entries_by_file.get(cf["id"], [])
+        for cb in cold_batches:
+            d = _row_to_dict(cb)
+            d["entries"] = entries_by_batch.get(cb["id"], [])
             result.append(d)
 
+        # API 键沿用历史术语 files（对应存储概念 batch），前端兼容。
         return {"files": result, "total": len(result)}
     finally:
         conn.close()
@@ -731,22 +732,22 @@ def get_stats():
     conn = _conn()
     try:
         total_entries = conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
-        total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        dirty_files = conn.execute(
-            "SELECT COUNT(*) FROM files WHERE dirty = 1"
+        total_groups = conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0]
+        dirty_groups = conn.execute(
+            "SELECT COUNT(*) FROM groups WHERE dirty = 1"
         ).fetchone()[0]
         cold_entries = conn.execute("SELECT COUNT(*) FROM cold_entries").fetchone()[0]
-        cold_files = conn.execute("SELECT COUNT(*) FROM cold_files").fetchone()[0]
+        cold_batches = conn.execute("SELECT COUNT(*) FROM cold_batches").fetchone()[0]
         categories = conn.execute(
-            "SELECT DISTINCT category FROM files ORDER BY category"
+            "SELECT DISTINCT category FROM groups ORDER BY category"
         ).fetchall()
 
         return {
             "total_entries": total_entries,
-            "total_files": total_files,
-            "dirty_files": dirty_files,
+            "total_groups": total_groups,
+            "dirty_groups": dirty_groups,
             "cold_entries": cold_entries,
-            "cold_files": cold_files,
+            "cold_batches": cold_batches,
             "categories": [r[0] for r in categories],
             "db_path": str(_resolve_db_path()),
         }

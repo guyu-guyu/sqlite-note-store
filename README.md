@@ -4,9 +4,11 @@ Hermes Agent 的 SQLite 后端记忆库插件。权威存储放在单个 SQLite 
 
 > **前置阅读：** `DESIGN_PHILOSOPHY.md` — 讲这个插件为什么这样设计。本 README 只讲"怎么装、怎么用、内部长什么样"。
 
+> **术语约定：** 存储层概念是**组（group）**——一个主题容器，把相似条目归拢在一起（`groups` 表一行），导出时才对应一个 `category/slug.md` 文件。冷存储按创建时间分成**批次（batch）**（`cold_batches` 表一行），不是主题组。下文除明确指磁盘产物（md 文件、INDEX.md）外，"文件"均指组。
+
 ## 特性
 
-- **单文件 SQLite 权威存储** — 一次写入 = 一行 INSERT/UPDATE + FTS5 触发器同步，不再重写整个 md 文件、不再全仓 FTS rebuild
+- **单文件 SQLite 权威存储** — 一次写入 = 一行 INSERT/UPDATE + FTS5 索引同步，不再重写整个 md 文件、不再全仓 FTS rebuild
 - **9 个 LLM 工具** — `note_search` / `note_write` / `note_read` / `note_read_group` / `note_use` / `note_recall` / `note_comment` / `note_maintain` / `note_rewrite`
 - **随时导出成 Markdown 目录** — 生成可 grep、可 vim 打开的目录树
 - **随时从 Markdown 目录导入** — 支持任意符合投影结构的 md 目录一键迁入
@@ -81,10 +83,10 @@ export.import_from_directory(conn, Path("/path/to/some-markdown-notes"), replace
 ```markdown
 # Note Repository (sqlite-note-store)
 Persistent memory keyed on `title` (auto-slugged to a file).
-Reading path: scan the index below first to spot the right file,
+Reading path: scan the index below first to spot the right group,
 then `note_read(path)` for a slim headers overview, then
 `note_read(path, entry_header)` to fetch just the entry you want —
-cheap on context. Only during maintenance (processing a dirty file)
+cheap on context. Only during maintenance (processing a dirty group)
 use `note_read_group(path)` to see every entry's body.
 Fall back to `note_search(query)` when the index doesn't match.
 
@@ -92,7 +94,7 @@ Fall back to `note_search(query)` when the index doesn't match.
 
 # Note Repository Index
 
-- Files: **12** · Entries: **47** · Cold entries: **83** · Dirty: **2**
+- Groups: **12** · Entries: **47** · Cold entries: **83** · Dirty: **2**
 - Generated: `2026-08-20T18:52:00+00:00`
 
 ## coding
@@ -107,7 +109,7 @@ Fall back to `note_search(query)` when the index doesn't match.
 - [2026-07-15.md](cold-storage/2026-07-15.md) — 23 entries
 ```
 
-顶栏统计给出 `Files / Entries / Cold / Dirty` 四个数字，加上生成时间戳。之后按分类分组列出所有活跃文件，每个文件标注条目数；dirty 文件带 `*(dirty)*` 标记。冷存储只列文件名 + 条目数。
+顶栏统计给出 `Groups / Entries / Cold / Dirty` 四个数字，加上生成时间戳。之后按分类分组列出所有活跃组，每个组标注条目数；dirty 组带 `*(dirty)*` 标记。冷存储只列文件名 + 条目数。
 
 ### 实现路径
 
@@ -116,7 +118,7 @@ provider.py::system_prompt_block()   ← 每轮由 Hermes 调用
     │
     └── export.py::_build_index_markdown(conn)
             │
-            ├── 4 条简单 SQL 查询（files / entries count / cold count / cold files）
+            ├── 4 条简单 SQL 查询（groups / entries count / cold count / cold batches）
             └── 纯字符串拼接
 ```
 
@@ -149,19 +151,19 @@ python -m sqlite_note_store export /tmp/view --no-index  # 跳过 INDEX.md
 
 追加一条新条目。会：
 - 用 `slugify(title)` 得到文件名 → `category/<slug>.md`
-- 如果同 slug 文件已存在，追加为该文件的一个新 entry
-- 无论如何**都会把文件置 dirty**，等 LLM 在下次维护时判断是否需要合并
+- 如果同 slug 组已存在，追加为该组的一个新 entry
+- 无论如何**都会把组置 dirty**，等 LLM 在下次维护时判断是否需要合并
 
 ### `note_read(path, entry_header=None)`
 
 **两种模式，默认省 context：**
 
-- `note_read(path)` — 返回文件的**精简概要**：`{title, category, tags, dirty, entry_count, headers}`，**不包含 content**。
+- `note_read(path)` — 返回组的**精简概要**：`{title, category, tags, dirty, entry_count, headers}`，**不包含 content**。
 - `note_read(path, entry_header="...")` — 返回**单个条目**的完整内容 `{header, content, last_used, comments}`。日常对话引用记忆的正确路径。
 
 ### `note_read_group(path)`
 
-一次拉完整个文件的所有 entries + 每条 comments。**仅在维护流程使用** — LLM 处理 dirty 文件时需要看所有邻居才能判断合并/去重/拆分。
+一次拉完整个组的所有 entries + 每条 comments。**仅在维护流程使用** — LLM 处理 dirty 组时需要看所有邻居才能判断合并/去重/拆分。
 
 ### `note_use(path, entry_header)`
 
@@ -173,35 +175,35 @@ python -m sqlite_note_store export /tmp/view --no-index  # 跳过 INDEX.md
 
 ### `note_comment(path, entry_header, comment_type, comment_text)`
 
-给某个 entry 挂一条 ephemeral TODO，同时把文件标 dirty。`comment_type`：`inaccurate` / `needs_improvement` / `wrong` / `conflicting` / `misplaced`。
+给某个 entry 挂一条 ephemeral TODO，同时把组标 dirty。`comment_type`：`inaccurate` / `needs_improvement` / `wrong` / `conflicting` / `misplaced`。
 
 ### `note_maintain(force=False)`
 
 做**所有不涉及语义判断的机械工作**，返回 dirty 清单让 LLM 处理：
 
 - 冷迁移超过 `cold_evict_days`（默认 90 天）没用过的条目
-- 冷文件超上限（默认 50 个）删最老
-- 检测超大文件 → force dirty
+- 冷批次超上限（默认 50 个）删最老
+- 检测超大组 → force dirty
 - 检测超限分类 → force dirty
-- 返回 `{dirty_notes, cold_moved, cold_files_pruned, oversized_files, overpopulated_categories}`
+- 返回 `{dirty_groups, cold_moved, cold_batches_pruned, oversized_groups, overpopulated_categories}`
 
 **`note_maintain` 从不清 dirty**，这是最关键的一条契约。
 
 ### `note_rewrite(path, entries)`
 
-**唯一能清 dirty 的工具**。传入 `entries=[{header, content, last_used?}, ...]`，整个文件的条目被这一列表替换，文件标 `dirty: false`，所有 comments 被消费。`entries=[]` 删除文件。
+**唯一能清 dirty 的工具**。传入 `entries=[{header, content, last_used?}, ...]`，整个组的条目被这一列表替换，组标 `dirty: false`，所有 comments 被消费。`entries=[]` 删除组。
 
-### 文件/分类编辑（Dashboard API）
+### 组/分类编辑（Dashboard API）
 
-除了上述 LLM 工具，provider 还通过 HTTP API 暴露了文件和分类的管理能力，供 Web 看板使用：
+除了上述 LLM 工具，provider 还通过 HTTP API 暴露了组和分类的管理能力，供 Web 看板使用（路由名沿用历史术语 file，对应存储概念 group）：
 
 | 操作 | 端点 | 保护 |
 |---|---|---|
 | 重命名分类 | `PUT /api/categories/{name}` | — |
-| 删除分类 | `DELETE /api/categories/{name}` | 有文件→禁止 (409) |
-| 重命名文件 | `PUT /api/files/{path}` | — |
-| 移动文件到其他分类 | `PUT /api/files/{path}` | — |
-| 删除文件 | `DELETE /api/files/{path}` | 有条目→禁止 (409) |
+| 删除分类 | `DELETE /api/categories/{name}` | 有组→禁止 (409) |
+| 重命名组 | `PUT /api/files/{path}` | — |
+| 移动组到其他分类 | `PUT /api/files/{path}` | — |
+| 删除组 | `DELETE /api/files/{path}` | 有条目→禁止 (409) |
 | 编辑条目 | `PUT /api/entries/{id}` | — |
 | 删除条目 | `DELETE /api/entries/{id}` | — |
 
@@ -211,7 +213,7 @@ python -m sqlite_note_store export /tmp/view --no-index  # 跳过 INDEX.md
 
 ```
 sqlite_note_store/
-├── schema.py            — DDL + migration + schema_version
+├── schema.py            — DDL + 建库（groups / entries / cold_batches / cold_entries + FTS5）
 ├── markdown_io.py       — parse_file() / render_file() / entry ⇋ row
 ├── storage.py           — CRUD + FTS 搜索 + 冷迁移 SQL
 ├── export.py            — SQLite ⇋ 目录树的双向桥
@@ -229,7 +231,7 @@ sqlite_note_store/
 tests/
 ├── test_schema.py        — 建表 / 幂等 / 外键级联
 ├── test_markdown_io.py   — YAML 解析 / 条目解析 / round-trip 稳定
-├── test_storage.py       — CRUD / FTS / 冷迁移 / cold 上限
+├── test_storage.py       — CRUD / FTS / 冷迁移 / 冷批次上限
 ├── test_export.py        — export/import 双向、clean、round-trip
 └── test_provider.py      — tool 端到端 + dirty 契约 + 冷屏蔽 + Dashboard API
 ```
@@ -247,13 +249,13 @@ python -m pytest -v
 |---|---|
 | SQLite 是权威，Markdown 是投影 | `schema.py` 建库 + `export.py` 生成投影 |
 | 导入导出无损 | `tests/test_export.py::test_import_roundtrip_is_idempotent` |
-| 条目为单位，文件为容器 | `entries` + `files` 两表分离；写入按 slug 落 file |
-| dirty 是文件级 | `files.dirty` 字段 + `mark_dirty()` |
-| Python 检测，LLM 决策，note_rewrite 持久化 | `note_maintain` 只返 dirty_notes；`note_rewrite` 是唯一 `mark_dirty(False)` 入口 |
-| Python 从不物理删除活跃文件 | 唯一 `DELETE FROM files` 是 `note_rewrite(entries=[])`，由 LLM 主动触发 |
-| 冷存储是追加到最新文件的队列 | `get_or_create_cold_file_for_today()` + `enforce_cold_file_limit()` 按文件名删 |
+| 条目为单位，组为容器 | `entries` + `groups` 两表分离；写入按 slug 落 group |
+| dirty 是组级 | `groups.dirty` 字段 + `mark_dirty()` |
+| Python 检测，LLM 决策，note_rewrite 持久化 | `note_maintain` 只返 dirty_groups；`note_rewrite` 是唯一 `mark_dirty(False)` 入口 |
+| Python 从不物理删除活跃组 | 唯一 `DELETE FROM groups` 是 `note_rewrite(entries=[])`，由 LLM 主动触发 |
+| 冷存储是追加到最新批次的队列 | `get_or_create_cold_batch_for_today()` + `enforce_cold_batch_limit()` 按创建时间删最老批次 |
 | Cold recall 是只读的 | `note_recall` 只 SELECT 不 UPDATE |
-| 保留隐式关联性 | 维护时用 `note_read_group(path)` 一次拉整文件；INDEX 用 file 作聚类锚 |
+| 保留隐式关联性 | 维护时用 `note_read_group(path)` 一次拉整组；INDEX 用 group 作聚类锚 |
 | 评论是 ephemeral TODO | `note_comment` 追加 JSON + 标脏；`note_rewrite` 自动清空 |
 | 无 pip 依赖 | `plugin.yaml: pip_dependencies: []` |
 

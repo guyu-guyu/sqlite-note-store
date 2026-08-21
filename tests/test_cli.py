@@ -47,7 +47,7 @@ def test_cli_import_then_status_then_export(tmp_path):
 
     imp = _run("--db-root", str(db_root), "import", str(src), "--replace")
     assert imp.returncode == 0, imp.stderr
-    assert "files=1" in imp.stdout
+    assert "groups=1" in imp.stdout
     assert "entries=1" in imp.stdout
 
     status = _run("--db-root", str(db_root), "status")

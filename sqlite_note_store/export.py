@@ -23,6 +23,10 @@ Directory shape produced (mirrors the reference plugin):
         YYYY-MM-DD-NN.md          # collision suffix
         ...
 
+In the DB each exported .md file under <category>/ corresponds to one
+`groups` row (a thematic container of entries); each cold-storage .md
+corresponds to one `cold_batches` row (a time-queue archive batch).
+
 Tests round-trip a curated fixture DB through export → parse → import
 and assert row-level equivalence. That's the executable form of the
 "data structure aligned with markdown" requirement.
@@ -68,19 +72,19 @@ def export_to_directory(
                      convenience for humans; the DB itself is SoT, so
                      regenerating it every time is fine.
 
-    Returns a small stats dict for logging: files/entries/cold counts.
+    Returns a small stats dict for logging: groups/entries/batches counts.
     """
     out_root.mkdir(parents=True, exist_ok=True)
 
     if clean:
         _clean_managed_dirs(out_root, conn)
 
-    files_written = 0
+    groups_written = 0
     entries_written = 0
 
-    for f in storage.list_files(conn):
-        entries = storage.list_entries(conn, f.id)
-        meta = _file_row_to_meta(f)
+    for g in storage.list_groups(conn):
+        entries = storage.list_entries(conn, g.id)
+        meta = _group_row_to_meta(g)
         parsed = [
             markdown_io.ParsedEntry(
                 header=e.header,
@@ -92,17 +96,17 @@ def export_to_directory(
         ]
         text = markdown_io.render_file(meta, parsed)
 
-        target = out_root / f.path
+        target = out_root / g.path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-        files_written += 1
+        groups_written += 1
         entries_written += len(entries)
 
-    cold_files_written = 0
+    cold_batches_written = 0
     cold_entries_written = 0
     cold_dir = out_root / COLD_DIRNAME
-    for cf in storage.list_cold_files(conn):
-        cold_entries = storage.list_cold_entries(conn, cf["id"])
+    for cb in storage.list_cold_batches(conn):
+        cold_entries = storage.list_cold_entries(conn, cb["id"])
         parsed_cold = [
             markdown_io.ParsedEntry(
                 header=ce["header"],
@@ -117,8 +121,8 @@ def export_to_directory(
         # meaningless in a time-queue archive. Matches reference plugin.
         text = markdown_io.build_body_from_entries(parsed_cold)
         cold_dir.mkdir(parents=True, exist_ok=True)
-        (cold_dir / cf["filename"]).write_text(text, encoding="utf-8")
-        cold_files_written += 1
+        (cold_dir / cb["filename"]).write_text(text, encoding="utf-8")
+        cold_batches_written += 1
         cold_entries_written += len(cold_entries)
 
     if write_index:
@@ -127,23 +131,23 @@ def export_to_directory(
         )
 
     return {
-        "files": files_written,
+        "groups": groups_written,
         "entries": entries_written,
-        "cold_files": cold_files_written,
+        "cold_batches": cold_batches_written,
         "cold_entries": cold_entries_written,
     }
 
 
-def _file_row_to_meta(f: storage.FileRow) -> dict[str, Any]:
+def _group_row_to_meta(g: storage.GroupRow) -> dict[str, Any]:
     """Reverse of the meta parser — same key set, same order preferences."""
     meta: dict[str, Any] = {
-        "title": f.title or f.slug,
-        "dirty": f.dirty,
-        "created": f.created,
-        "updated": f.updated,
+        "title": g.title or g.slug,
+        "dirty": g.dirty,
+        "created": g.created,
+        "updated": g.updated,
     }
-    if f.tags:
-        meta["tags"] = f.tags
+    if g.tags:
+        meta["tags"] = g.tags
     return meta
 
 
@@ -151,12 +155,12 @@ def _clean_managed_dirs(out_root: Path, conn: sqlite3.Connection) -> None:
     """Remove category dirs and cold-storage before a clean export.
 
     We only touch directories the DB itself owns (category names from
-    `files` plus `cold-storage/`). Anything else the user dropped in
+    `groups` plus `cold-storage/`). Anything else the user dropped in
     `out_root` stays untouched — this is a stronger guarantee than
     `rm -rf` and matches the reference plugin's cautious file handling.
     """
     categories = {
-        r["category"] for r in conn.execute("SELECT DISTINCT category FROM files")
+        r["category"] for r in conn.execute("SELECT DISTINCT category FROM groups")
     }
     for cat in categories:
         p = out_root / cat
@@ -176,13 +180,13 @@ def _build_index_markdown(conn: sqlite3.Connection) -> str:
     """Human-readable summary. Not a source of truth; safe to regenerate."""
     lines: list[str] = ["# Note Repository Index", ""]
 
-    files = storage.list_files(conn)
+    groups = storage.list_groups(conn)
     total_entries = storage.count_active_entries(conn)
     cold_entries = storage.count_cold_entries(conn)
-    dirty_files = [f for f in files if f.dirty]
+    dirty_groups = [g for g in groups if g.dirty]
     lines.append(
-        f"- Files: **{len(files)}** · Entries: **{total_entries}** "
-        f"· Cold entries: **{cold_entries}** · Dirty: **{len(dirty_files)}**"
+        f"- Groups: **{len(groups)}** · Entries: **{total_entries}** "
+        f"· Cold entries: **{cold_entries}** · Dirty: **{len(dirty_groups)}**"
     )
     lines.append(
         f"- Generated: `{datetime.now(timezone.utc).isoformat()}`"
@@ -190,33 +194,33 @@ def _build_index_markdown(conn: sqlite3.Connection) -> str:
     lines.append("")
 
     # Group by category.
-    by_cat: dict[str, list[storage.FileRow]] = {}
-    for f in files:
-        by_cat.setdefault(f.category, []).append(f)
+    by_cat: dict[str, list[storage.GroupRow]] = {}
+    for g in groups:
+        by_cat.setdefault(g.category, []).append(g)
 
     for category in sorted(by_cat):
         lines.append(f"## {category}")
         lines.append("")
-        for f in sorted(by_cat[category], key=lambda r: r.slug):
+        for g in sorted(by_cat[category], key=lambda r: r.slug):
             entry_count = conn.execute(
-                "SELECT COUNT(*) FROM entries WHERE file_id = ?", (f.id,)
+                "SELECT COUNT(*) FROM entries WHERE group_id = ?", (g.id,)
             ).fetchone()[0]
-            marker = " *(dirty)*" if f.dirty else ""
+            marker = " *(dirty)*" if g.dirty else ""
             lines.append(
-                f"- [{f.title or f.slug}]({f.path}) — {entry_count} entries{marker}"
+                f"- [{g.title or g.slug}]({g.path}) — {entry_count} entries{marker}"
             )
         lines.append("")
 
     if cold_entries:
         lines.append("## cold-storage")
         lines.append("")
-        for cf in storage.list_cold_files(conn):
+        for cb in storage.list_cold_batches(conn):
             count = conn.execute(
-                "SELECT COUNT(*) FROM cold_entries WHERE cold_file_id = ?",
-                (cf["id"],),
+                "SELECT COUNT(*) FROM cold_entries WHERE cold_batch_id = ?",
+                (cb["id"],),
             ).fetchone()[0]
             lines.append(
-                f"- [{cf['filename']}]({COLD_DIRNAME}/{cf['filename']}) — {count} entries"
+                f"- [{cb['filename']}]({COLD_DIRNAME}/{cb['filename']}) — {count} entries"
             )
         lines.append("")
 
@@ -236,7 +240,7 @@ def import_from_directory(
     Args:
         replace: if True, wipe existing DB contents before importing.
                  Otherwise we upsert by path — same path replaces its
-                 entries, new paths get added, unmentioned files stay.
+                 entries, new paths get added, unmentioned groups stay.
                  The reference plugin never merges arbitrary sources, so
                  replace=True is the honest "migration from markdown"
                  operation.
@@ -247,16 +251,22 @@ def import_from_directory(
     if replace:
         _wipe_all(conn)
 
-    stats = {"files": 0, "entries": 0, "cold_files": 0, "cold_entries": 0, "skipped": 0}
+    stats = {
+        "groups": 0,
+        "entries": 0,
+        "cold_batches": 0,
+        "cold_entries": 0,
+        "skipped": 0,
+    }
 
     for md_path in sorted(in_root.rglob("*.md")):
         rel = md_path.relative_to(in_root)
         if rel.name == INDEX_FILENAME and rel.parent == Path("."):
             continue
         if rel.parts and rel.parts[0] == COLD_DIRNAME:
-            _import_cold_file(conn, md_path, rel.name, stats)
+            _import_cold_batch(conn, md_path, rel.name, stats)
         else:
-            _import_active_file(conn, md_path, rel, stats)
+            _import_active_group(conn, md_path, rel, stats)
 
     conn.commit()
     return stats
@@ -270,18 +280,18 @@ def _wipe_all(conn: sqlite3.Connection) -> None:
     """
     conn.execute("DELETE FROM entries_fts")
     conn.execute("DELETE FROM entries")
-    conn.execute("DELETE FROM files")
+    conn.execute("DELETE FROM groups")
     conn.execute("DELETE FROM cold_entries")
-    conn.execute("DELETE FROM cold_files")
+    conn.execute("DELETE FROM cold_batches")
 
 
-def _import_active_file(
+def _import_active_group(
     conn: sqlite3.Connection,
     abs_path: Path,
     rel_path: Path,
     stats: dict[str, int],
 ) -> None:
-    """Parse an active-note file and upsert its file row + entries."""
+    """Parse an active-note file and upsert its group row + entries."""
     parts = rel_path.parts
     if len(parts) < 2:
         # A .md sitting at the root with no category. Reference plugin
@@ -306,7 +316,7 @@ def _import_active_file(
     created = str(parsed.meta.get("created") or now)
     updated = str(parsed.meta.get("updated") or now)
 
-    file_id = storage.upsert_file(
+    group_id = storage.upsert_group(
         conn,
         path=canonical_rel,
         category=category,
@@ -318,12 +328,12 @@ def _import_active_file(
         updated=updated,
     )
     # Replace entries wholesale so re-import is idempotent.
-    storage.replace_entries(conn, file_id, parsed.entries)
-    stats["files"] += 1
+    storage.replace_entries(conn, group_id, parsed.entries)
+    stats["groups"] += 1
     stats["entries"] += len(parsed.entries)
 
 
-def _import_cold_file(
+def _import_cold_batch(
     conn: sqlite3.Connection,
     abs_path: Path,
     filename: str,
@@ -342,25 +352,25 @@ def _import_cold_file(
     # If a row with this filename already exists (re-import path), keep
     # its id but wipe entries so we don't accumulate duplicates.
     existing = conn.execute(
-        "SELECT id FROM cold_files WHERE filename = ?", (filename,)
+        "SELECT id FROM cold_batches WHERE filename = ?", (filename,)
     ).fetchone()
     if existing:
-        cold_id = existing["id"]
-        conn.execute("DELETE FROM cold_entries WHERE cold_file_id = ?", (cold_id,))
+        batch_id = existing["id"]
+        conn.execute("DELETE FROM cold_entries WHERE cold_batch_id = ?", (batch_id,))
     else:
         cur = conn.execute(
-            "INSERT INTO cold_files(filename, created) VALUES (?, ?)",
+            "INSERT INTO cold_batches(filename, created) VALUES (?, ?)",
             (filename, created),
         )
-        cold_id = cur.lastrowid
+        batch_id = cur.lastrowid
 
     for idx, e in enumerate(entries):
         conn.execute(
-            "INSERT INTO cold_entries(cold_file_id, header, content, last_used, "
+            "INSERT INTO cold_entries(cold_batch_id, header, content, last_used, "
             "original_category, order_index) VALUES (?, ?, ?, ?, ?, ?)",
-            (cold_id, e.header, e.content, e.last_used, None, idx),
+            (batch_id, e.header, e.content, e.last_used, None, idx),
         )
-    stats["cold_files"] += 1
+    stats["cold_batches"] += 1
     stats["cold_entries"] += len(entries)
 
 

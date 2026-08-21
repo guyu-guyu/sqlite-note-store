@@ -190,7 +190,7 @@
       ),
       // metadata bar
       h("div", { style: { display: "flex", gap: "12px", padding: "4px 12px", fontSize: "11px", color: "#666", borderBottom: "1px solid #222" } },
-        h("span", null, "文件: " + (d.file_title || d.file_path || "—")),
+        h("span", null, "分组: " + (d.file_title || d.file_path || "—")),
         h("span", null, "分类: " + (d.category || "—")),
         h("span", null, "最后使用: " + ago(d.last_used)),
         d.dirty && h("span", { style: { color: "#e67e22" } }, "· dirty")
@@ -205,7 +205,7 @@
     );
   }
 
-  // ── 文件编辑器 ──────────────────────────────────────────────────────────
+  // ── 分组编辑器 ──────────────────────────────────────────────────────────
 
   function FileEditor(props) {
     var s = React.useState({ title: props.title || "", category: props.category || "", saving: false, error: null, delError: null });
@@ -224,30 +224,30 @@
     }
 
     function del() {
-      if (!confirm("确认删除此文件？")) return;
+      if (!confirm("确认删除此分组？")) return;
       setSt(function (p) { return Object.assign({}, p, { delError: null }); });
       f(API + "/files/" + props.id, { method: "DELETE" })
         .then(function () {
           if (props.onDeleted) props.onDeleted();
         })
         .catch(function (e) {
-          // 非空文件返回 409
+          // 非空分组返回 409
           var msg = e.message || String(e);
-          if (msg.indexOf("409") >= 0) msg = "文件非空，请先清空条目后再删除";
+          if (msg.indexOf("409") >= 0) msg = "分组非空，请先清空条目后再删除";
           setSt(function (p) { return Object.assign({}, p, { delError: msg }); });
         });
     }
 
     return h("div", { style: { display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" } },
       h("div", { style: { display: "flex", alignItems: "center", gap: "8px", padding: "8px 12px", borderBottom: "1px solid #222" } },
-        h("span", { style: { fontSize: "12px", color: "#888" } }, "文件 #" + props.id),
+        h("span", { style: { fontSize: "12px", color: "#888" } }, "分组 #" + props.id),
         h("span", { style: { flex: 1, fontSize: "13px", color: "#ccc", fontWeight: 600 } }, props.title || props.path),
         props.dirty && h("span", { style: { fontSize: "9px", color: "#e67e22", border: "1px solid #e67e22", borderRadius: "3px", padding: "0 4px" } }, "dirty")
       ),
       h("div", { style: { flex: 1, overflowY: "auto", padding: "16px" } },
         h("div", { style: { marginBottom: "12px" } },
-          h("label", { style: { display: "block", fontSize: "11px", color: "#888", marginBottom: "4px" } }, "文件标题"),
-          h(Input, { value: st.title, onChange: function (e) { setSt(function (p) { return Object.assign({}, p, { title: e.target.value }); }); }, placeholder: "文件标题" })
+          h("label", { style: { display: "block", fontSize: "11px", color: "#888", marginBottom: "4px" } }, "分组标题"),
+          h(Input, { value: st.title, onChange: function (e) { setSt(function (p) { return Object.assign({}, p, { title: e.target.value }); }); }, placeholder: "分组标题" })
         ),
         h("div", { style: { marginBottom: "12px" } },
           h("label", { style: { display: "block", fontSize: "11px", color: "#888", marginBottom: "4px" } }, "分类"),
@@ -258,7 +258,7 @@
       ),
       h("div", { style: { display: "flex", gap: "8px", padding: "8px 12px", borderTop: "1px solid #222" } },
         h(Button, { size: "sm", variant: "primary", disabled: st.saving, onClick: save }, st.saving ? "保存中…" : "保存"),
-        h(Button, { size: "sm", variant: "danger", onClick: del }, "删除文件"),
+        h(Button, { size: "sm", variant: "danger", onClick: del }, "删除分组"),
         h("span", { style: { fontSize: "11px", color: "#888", alignSelf: "center" } }, props.entryCount + " 个条目")
       )
     );
@@ -292,7 +292,7 @@
         })
         .catch(function (e) {
           var msg = e.message || String(e);
-          if (msg.indexOf("409") >= 0) msg = "分类非空，请先清空文件后再删除";
+          if (msg.indexOf("409") >= 0) msg = "分类非空，请先清空分组后再删除";
           setSt(function (p) { return Object.assign({}, p, { delError: msg }); });
         });
     }
@@ -313,7 +313,7 @@
       h("div", { style: { display: "flex", gap: "8px", padding: "8px 12px", borderTop: "1px solid #222" } },
         h(Button, { size: "sm", variant: "primary", disabled: st.saving, onClick: save }, st.saving ? "保存中…" : "重命名"),
         h(Button, { size: "sm", variant: "danger", onClick: del }, "删除分类"),
-        h("span", { style: { fontSize: "11px", color: "#888", alignSelf: "center" } }, props.fileCount + " 个文件")
+        h("span", { style: { fontSize: "11px", color: "#888", alignSelf: "center" } }, props.fileCount + " 个分组")
       )
     );
   }
@@ -388,7 +388,7 @@
     if (files.length === 0) return h("div", { style: { padding: "16px", color: "#888", fontSize: "13px" } }, "冷存储为空");
 
     return h("div", { style: { overflowY: "auto", flex: 1 } },
-      h("div", { style: { padding: "8px 12px", fontSize: "11px", color: "#666" } }, "共 " + files.length + " 个冷存储文件"),
+      h("div", { style: { padding: "8px 12px", fontSize: "11px", color: "#666" } }, "共 " + files.length + " 个冷存储批次"),
       files.map(function (file) {
         return h("div", {
           key: file.id,
@@ -421,10 +421,10 @@
     var d = st.data;
 
     return h("div", { style: { padding: "16px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "12px" } },
-      statCard("活跃文件", d.total_files),
+      statCard("活跃分组", d.total_groups),
       statCard("活跃条目", d.total_entries),
-      statCard("Dirty 文件", d.dirty_files),
-      statCard("冷存储文件", d.cold_files),
+      statCard("Dirty 分组", d.dirty_groups),
+      statCard("冷存储批次", d.cold_batches),
       statCard("冷存储条目", d.cold_entries),
       statCard("分类数", d.categories ? d.categories.length : 0)
     );
@@ -471,8 +471,8 @@
       setSt(function (p) { return Object.assign({}, p, { saving: true, error: null }); });
 
       if (st.mode === "new") {
-        // 先创建文件，再创建条目
-        if (!st.newTitle.trim()) { setSt(function (p) { return Object.assign({}, p, { saving: false, error: "新文件标题不能为空" }); }); return; }
+        // 先创建分组，再创建条目
+        if (!st.newTitle.trim()) { setSt(function (p) { return Object.assign({}, p, { saving: false, error: "新分组标题不能为空" }); }); return; }
         f(API + "/files", { method: "POST", body: JSON.stringify({ category: st.newCategory.trim() || "uncategorized", title: st.newTitle.trim() }),
           headers: { "Content-Type": "application/json" } })
           .then(function (fr) {
@@ -482,7 +482,7 @@
           .then(function (r) { if (props.onCreated) props.onCreated(r.id); })
           .catch(function (e) { setSt(function (p) { return Object.assign({}, p, { saving: false, error: String(e.message || e) }); }); });
       } else {
-        if (!st.fileId) { setSt(function (p) { return Object.assign({}, p, { saving: false, error: "请先选择目标文件" }); }); return; }
+        if (!st.fileId) { setSt(function (p) { return Object.assign({}, p, { saving: false, error: "请先选择目标分组" }); }); return; }
         f(API + "/entries", { method: "POST", body: JSON.stringify({ header: st.header, content: st.body, file_id: st.fileId }),
           headers: { "Content-Type": "application/json" } })
           .then(function (r) { if (props.onCreated) props.onCreated(r.id); })
@@ -506,15 +506,15 @@
         h("h3", { style: { fontSize: "15px", fontWeight: 600, marginBottom: "16px", paddingRight: "30px" } }, "新建条目"),
         // 模式切换
         h("div", { style: { display: "flex", gap: "8px", marginBottom: "12px" } },
-          h("button", { style: modeBtn(st.mode === "existing"), onClick: function () { setSt(function (p) { return Object.assign({}, p, { mode: "existing" }); }); } }, "选择已有文件"),
-          h("button", { style: modeBtn(st.mode === "new"), onClick: function () { setSt(function (p) { return Object.assign({}, p, { mode: "new" }); }); } }, "新建文件")
+          h("button", { style: modeBtn(st.mode === "existing"), onClick: function () { setSt(function (p) { return Object.assign({}, p, { mode: "existing" }); }); } }, "选择已有分组"),
+          h("button", { style: modeBtn(st.mode === "new"), onClick: function () { setSt(function (p) { return Object.assign({}, p, { mode: "new" }); }); } }, "新建分组")
         ),
         h("div", { style: { display: "flex", flexDirection: "column", gap: "12px" } },
           st.loading
-            ? h("div", { style: { color: "#888", fontSize: "13px" } }, "加载文件列表…")
+            ? h("div", { style: { color: "#888", fontSize: "13px" } }, "加载分组列表…")
             : st.mode === "existing"
               ? (st.files.length === 0
-                  ? h("div", { style: { color: "#e53e3e", fontSize: "13px" } }, "记忆库中没有文件，请切换到「新建文件」模式。")
+                  ? h("div", { style: { color: "#e53e3e", fontSize: "13px" } }, "记忆库中没有分组，请切换到「新建分组」模式。")
                   : h("select", {
                       value: st.fileId,
                       onChange: function (e) { setSt(function (p) { return Object.assign({}, p, { fileId: parseInt(e.target.value, 10) }); }); },
@@ -540,8 +540,8 @@
                     )
                   ),
                   h("div", null,
-                    h("label", { style: { fontSize: "11px", color: "#888", display: "block", marginBottom: "4px" } }, "文件标题"),
-                    h(Input, { placeholder: "新文件的标题", value: st.newTitle,
+                    h("label", { style: { fontSize: "11px", color: "#888", display: "block", marginBottom: "4px" } }, "分组标题"),
+                    h(Input, { placeholder: "新分组的标题", value: st.newTitle,
                       onChange: function (e) { setSt(function (p) { return Object.assign({}, p, { newTitle: e.target.value }); }); } })
                   )
                 ),
@@ -654,7 +654,7 @@
         ),
         // right panel
         st.activeTab !== "stats" && h("div", { style: { flex: 1, overflow: "hidden" } },
-          rightPanel || h("div", { style: { padding: "24px", color: "#888", fontSize: "13px" } }, "在左侧选择一个条目、文件或分类进行编辑")
+          rightPanel || h("div", { style: { padding: "24px", color: "#888", fontSize: "13px" } }, "在左侧选择一个条目、分组或分类进行编辑")
         )
       ),
       // new entry modal

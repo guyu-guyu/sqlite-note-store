@@ -3,13 +3,19 @@
 Design contract
 ---------------
 1. Every mutation is atomic: use `with conn:` context so a failure
-   half-way through never leaves entries orphaned from their file row.
+   half-way through never leaves entries orphaned from their group row.
 2. The FTS shadow table (`entries_fts`) is maintained here — not by
    triggers — because FTS5 external-content sync is subtle and
    easier to reason about when writes go through a single function.
 3. Consumers (provider.py, export.py) never write raw SQL. If they
    need a query, we add a named function here. That keeps the shape
    contract enforceable and the surface area easy to audit.
+
+Terminology
+-----------
+The DB's atomic container is a `group` — a thematic set of similar
+entries (exported as one .md file). Cold storage holds time-queue
+`batches`, not topical groups. See schema.py for the full mapping.
 
 Reference (read-only): markdown-note-store-plugin/…/__init__.py.
 """
@@ -34,8 +40,8 @@ from . import markdown_io
 
 
 @dataclass
-class FileRow:
-    """One row from the `files` table, hydrated to Python-native types."""
+class GroupRow:
+    """One row from the `groups` table, hydrated to Python-native types."""
 
     id: int
     path: str
@@ -53,7 +59,7 @@ class EntryRow:
     """One row from the `entries` table, hydrated to Python-native types."""
 
     id: int
-    file_id: int
+    group_id: int
     header: str
     content: str
     last_used: str | None
@@ -71,8 +77,8 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_file(row: sqlite3.Row) -> FileRow:
-    return FileRow(
+def _row_to_group(row: sqlite3.Row) -> GroupRow:
+    return GroupRow(
         id=row["id"],
         path=row["path"],
         category=row["category"],
@@ -88,7 +94,7 @@ def _row_to_file(row: sqlite3.Row) -> FileRow:
 def _row_to_entry(row: sqlite3.Row) -> EntryRow:
     return EntryRow(
         id=row["id"],
-        file_id=row["file_id"],
+        group_id=row["group_id"],
         header=row["header"],
         content=row["content"],
         last_used=row["last_used"],
@@ -140,9 +146,9 @@ def _fts_delete_by_entry_id(conn: sqlite3.Connection, entry_id: int) -> None:
 def _fts_insert_entry(conn: sqlite3.Connection, entry_id: int) -> None:
     row = conn.execute(
         """
-        SELECT e.id, e.header, e.content, f.category, f.title, f.path
+        SELECT e.id, e.header, e.content, g.category, g.title, g.path
           FROM entries e
-          JOIN files   f ON f.id = e.file_id
+          JOIN groups  g ON g.id = e.group_id
          WHERE e.id = ?
         """,
         (entry_id,),
@@ -150,21 +156,21 @@ def _fts_insert_entry(conn: sqlite3.Connection, entry_id: int) -> None:
     if row is None:
         return
     conn.execute(
-        "INSERT INTO entries_fts(rowid, header, content, category, file_title, file_path) "
+        "INSERT INTO entries_fts(rowid, header, content, category, group_title, group_path) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (row["id"], row["header"], row["content"], row["category"],
          row["title"] or "", row["path"]),
     )
 
 
-def _fts_rebuild_for_file(conn: sqlite3.Connection, file_id: int) -> None:
-    """Wipe and re-index all entries of a single file.
+def _fts_rebuild_for_group(conn: sqlite3.Connection, group_id: int) -> None:
+    """Wipe and re-index all entries of a single group.
 
-    Used after replacing a file's entry set — cheaper than diffing.
+    Used after replacing a group's entry set — cheaper than diffing.
     """
     ids = [
         r[0] for r in conn.execute(
-            "SELECT id FROM entries WHERE file_id = ?", (file_id,)
+            "SELECT id FROM entries WHERE group_id = ?", (group_id,)
         )
     ]
     for eid in ids:
@@ -177,20 +183,20 @@ def _fts_rebuild_for_file(conn: sqlite3.Connection, file_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_file_by_path(conn: sqlite3.Connection, path: str) -> FileRow | None:
+def get_group_by_path(conn: sqlite3.Connection, path: str) -> GroupRow | None:
     row = conn.execute(
-        "SELECT * FROM files WHERE path = ?", (path,)
+        "SELECT * FROM groups WHERE path = ?", (path,)
     ).fetchone()
-    return _row_to_file(row) if row else None
+    return _row_to_group(row) if row else None
 
 
-def list_files(
+def list_groups(
     conn: sqlite3.Connection,
     *,
     category: str | None = None,
     dirty_only: bool = False,
-) -> list[FileRow]:
-    sql = "SELECT * FROM files"
+) -> list[GroupRow]:
+    sql = "SELECT * FROM groups"
     clauses: list[str] = []
     params: list[Any] = []
     if category is not None:
@@ -201,23 +207,23 @@ def list_files(
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY category, slug"
-    return [_row_to_file(r) for r in conn.execute(sql, params)]
+    return [_row_to_group(r) for r in conn.execute(sql, params)]
 
 
-def list_entries(conn: sqlite3.Connection, file_id: int) -> list[EntryRow]:
+def list_entries(conn: sqlite3.Connection, group_id: int) -> list[EntryRow]:
     rows = conn.execute(
-        "SELECT * FROM entries WHERE file_id = ? ORDER BY order_index, id",
-        (file_id,),
+        "SELECT * FROM entries WHERE group_id = ? ORDER BY order_index, id",
+        (group_id,),
     )
     return [_row_to_entry(r) for r in rows]
 
 
 def find_entry(
-    conn: sqlite3.Connection, file_id: int, header: str
+    conn: sqlite3.Connection, group_id: int, header: str
 ) -> EntryRow | None:
     row = conn.execute(
-        "SELECT * FROM entries WHERE file_id = ? AND header = ? LIMIT 1",
-        (file_id, header),
+        "SELECT * FROM entries WHERE group_id = ? AND header = ? LIMIT 1",
+        (group_id, header),
     ).fetchone()
     return _row_to_entry(row) if row else None
 
@@ -238,8 +244,8 @@ def search_fts(
     safe = '"' + query.replace('"', '""') + '"'
     rows = conn.execute(
         """
-        SELECT file_path AS path,
-               file_title AS title,
+        SELECT group_path AS path,
+               group_title AS title,
                category,
                snippet(entries_fts, 1, '<<', '>>', '...', 64) AS snippet
           FROM entries_fts
@@ -257,7 +263,7 @@ def search_fts(
 # ---------------------------------------------------------------------------
 
 
-def upsert_file(
+def upsert_group(
     conn: sqlite3.Connection,
     *,
     path: str,
@@ -269,58 +275,58 @@ def upsert_file(
     created: str | None = None,
     updated: str | None = None,
 ) -> int:
-    """Insert or update a file row, returning the row id.
+    """Insert or update a group row, returning the row id.
 
     Preserves `created` on update — the on-disk 'created' timestamp is a
-    durable property of the file, not a mutation timestamp.
+    durable property of the group, not a mutation timestamp.
     """
     now = _now()
     created = created or now
     updated = updated or now
     tags_json = json.dumps(tags, ensure_ascii=False)
-    existing = get_file_by_path(conn, path)
+    existing = get_group_by_path(conn, path)
     if existing:
         conn.execute(
-            "UPDATE files SET category=?, slug=?, title=?, tags=?, dirty=?, updated=? "
+            "UPDATE groups SET category=?, slug=?, title=?, tags=?, dirty=?, updated=? "
             "WHERE id=?",
             (category, slug, title, tags_json, int(dirty), updated, existing.id),
         )
         return existing.id
     cur = conn.execute(
-        "INSERT INTO files(path, category, slug, title, tags, dirty, created, updated) "
+        "INSERT INTO groups(path, category, slug, title, tags, dirty, created, updated) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (path, category, slug, title, tags_json, int(dirty), created, updated),
     )
     return cur.lastrowid
 
 
-def delete_file(conn: sqlite3.Connection, file_id: int) -> None:
-    """Delete a file and (via CASCADE) its entries; also wipe from FTS."""
-    for eid in [r[0] for r in conn.execute("SELECT id FROM entries WHERE file_id=?", (file_id,))]:
+def delete_group(conn: sqlite3.Connection, group_id: int) -> None:
+    """Delete a group and (via CASCADE) its entries; also wipe from FTS."""
+    for eid in [r[0] for r in conn.execute("SELECT id FROM entries WHERE group_id=?", (group_id,))]:
         _fts_delete_by_entry_id(conn, eid)
-    conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    conn.execute("DELETE FROM groups WHERE id = ?", (group_id,))
 
 
 def append_entry(
     conn: sqlite3.Connection,
-    file_id: int,
+    group_id: int,
     *,
     header: str,
     content: str,
     last_used: str | None = None,
     comments: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Append one entry at the end of `file_id`'s ordered entry list."""
+    """Append one entry at the end of `group_id`'s ordered entry list."""
     max_row = conn.execute(
-        "SELECT COALESCE(MAX(order_index), -1) FROM entries WHERE file_id = ?",
-        (file_id,),
+        "SELECT COALESCE(MAX(order_index), -1) FROM entries WHERE group_id = ?",
+        (group_id,),
     ).fetchone()
     next_order = (max_row[0] if max_row else -1) + 1
     cur = conn.execute(
-        "INSERT INTO entries(file_id, header, content, last_used, comments, order_index) "
+        "INSERT INTO entries(group_id, header, content, last_used, comments, order_index) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (
-            file_id,
+            group_id,
             header,
             content,
             last_used,
@@ -334,23 +340,23 @@ def append_entry(
 
 def replace_entries(
     conn: sqlite3.Connection,
-    file_id: int,
+    group_id: int,
     entries: Iterable[markdown_io.ParsedEntry],
 ) -> None:
-    """Wipe and re-insert `file_id`'s entries in the given order.
+    """Wipe and re-insert `group_id`'s entries in the given order.
 
     Backing operation for note_rewrite: called inside a transaction so
     the write is either fully applied or fully rolled back.
     """
-    for eid in [r[0] for r in conn.execute("SELECT id FROM entries WHERE file_id=?", (file_id,))]:
+    for eid in [r[0] for r in conn.execute("SELECT id FROM entries WHERE group_id=?", (group_id,))]:
         _fts_delete_by_entry_id(conn, eid)
-    conn.execute("DELETE FROM entries WHERE file_id = ?", (file_id,))
+    conn.execute("DELETE FROM entries WHERE group_id = ?", (group_id,))
     for idx, e in enumerate(entries):
         cur = conn.execute(
-            "INSERT INTO entries(file_id, header, content, last_used, comments, order_index) "
+            "INSERT INTO entries(group_id, header, content, last_used, comments, order_index) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (
-                file_id,
+                group_id,
                 e.header,
                 e.content,
                 e.last_used,
@@ -379,17 +385,17 @@ def append_comment(
     comment_text: str,
     when: str | None = None,
 ) -> None:
-    """Append a comment and mark the parent file dirty.
+    """Append a comment and mark the parent group dirty.
 
     Comments are ephemeral — they exist to signal the maintenance loop
     that this entry needs attention. `note_rewrite` clears them.
     """
     row = conn.execute(
-        "SELECT file_id, comments FROM entries WHERE id = ?", (entry_id,)
+        "SELECT group_id, comments FROM entries WHERE id = ?", (entry_id,)
     ).fetchone()
     if row is None:
         raise KeyError(f"entry_id {entry_id} not found")
-    file_id = row["file_id"]
+    group_id = row["group_id"]
     comments = json.loads(row["comments"] or "[]")
     comments.append({
         "type": comment_type,
@@ -401,72 +407,72 @@ def append_comment(
         (json.dumps(comments, ensure_ascii=False), entry_id),
     )
     conn.execute(
-        "UPDATE files SET dirty = 1, updated = ? WHERE id = ?",
-        (_now(), file_id),
+        "UPDATE groups SET dirty = 1, updated = ? WHERE id = ?",
+        (_now(), group_id),
     )
 
 
-def mark_dirty(conn: sqlite3.Connection, file_id: int, dirty: bool = True) -> None:
+def mark_dirty(conn: sqlite3.Connection, group_id: int, dirty: bool = True) -> None:
     conn.execute(
-        "UPDATE files SET dirty = ?, updated = ? WHERE id = ?",
-        (int(dirty), _now(), file_id),
+        "UPDATE groups SET dirty = ?, updated = ? WHERE id = ?",
+        (int(dirty), _now(), group_id),
     )
 
 
 # ---------------------------------------------------------------------------
-# Cold storage
+# Cold storage — time-queue batches
 # ---------------------------------------------------------------------------
 
 
-def get_or_create_cold_file_for_today(conn: sqlite3.Connection) -> int:
-    """Return the id of today's cold-storage file, creating one if needed.
+def get_or_create_cold_batch_for_today(conn: sqlite3.Connection) -> int:
+    """Return the id of today's cold-storage batch, creating one if needed.
 
-    The reference plugin picks *newest* file first; we match that so
-    files fill in insertion order rather than fragmenting one-per-day.
+    The reference plugin picks *newest* batch first; we match that so
+    batches fill in insertion order rather than fragmenting one-per-day.
     """
     newest = conn.execute(
-        "SELECT id FROM cold_files ORDER BY created DESC LIMIT 1"
+        "SELECT id FROM cold_batches ORDER BY created DESC LIMIT 1"
     ).fetchone()
     if newest is not None:
         return newest["id"]
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return _create_cold_file(conn, date_str)
+    return _create_cold_batch(conn, date_str)
 
 
-def _create_cold_file(conn: sqlite3.Connection, date_str: str) -> int:
-    """Insert a new cold file, disambiguating collisions with '-NN' suffix."""
+def _create_cold_batch(conn: sqlite3.Connection, date_str: str) -> int:
+    """Insert a new cold batch, disambiguating collisions with '-NN' suffix."""
     base = date_str
     filename = f"{base}.md"
     suffix = 1
     while conn.execute(
-        "SELECT 1 FROM cold_files WHERE filename = ?", (filename,)
+        "SELECT 1 FROM cold_batches WHERE filename = ?", (filename,)
     ).fetchone():
         filename = f"{base}-{suffix:02d}.md"
         suffix += 1
     cur = conn.execute(
-        "INSERT INTO cold_files(filename, created) VALUES (?, ?)",
+        "INSERT INTO cold_batches(filename, created) VALUES (?, ?)",
         (filename, _now()),
     )
     return cur.lastrowid
 
 
-def rollover_cold_file(conn: sqlite3.Connection) -> int:
-    """Force-create a new cold file — used when the current one is 'full'."""
+def rollover_cold_batch(conn: sqlite3.Connection) -> int:
+    """Force-create a new cold batch — used when the current one is 'full'."""
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return _create_cold_file(conn, date_str)
+    return _create_cold_batch(conn, date_str)
 
 
 def move_entry_to_cold(
-    conn: sqlite3.Connection, entry_id: int, *, cold_file_id: int
+    conn: sqlite3.Connection, entry_id: int, *, cold_batch_id: int
 ) -> int | None:
-    """Move an active entry into a cold-storage file.
+    """Move an active entry into a cold-storage batch.
 
     Returns the new cold_entries.id, or None if the entry was gone.
     Deletes the active-side row so it stops showing up in searches.
     """
     row = conn.execute(
-        "SELECT e.id, e.header, e.content, e.last_used, f.category "
-        "FROM entries e JOIN files f ON f.id = e.file_id "
+        "SELECT e.id, e.header, e.content, e.last_used, g.category "
+        "FROM entries e JOIN groups g ON g.id = e.group_id "
         "WHERE e.id = ?",
         (entry_id,),
     ).fetchone()
@@ -474,15 +480,15 @@ def move_entry_to_cold(
         return None
 
     max_row = conn.execute(
-        "SELECT COALESCE(MAX(order_index), -1) FROM cold_entries WHERE cold_file_id = ?",
-        (cold_file_id,),
+        "SELECT COALESCE(MAX(order_index), -1) FROM cold_entries WHERE cold_batch_id = ?",
+        (cold_batch_id,),
     ).fetchone()
     next_order = (max_row[0] if max_row else -1) + 1
 
     cur = conn.execute(
-        "INSERT INTO cold_entries(cold_file_id, header, content, last_used, "
+        "INSERT INTO cold_entries(cold_batch_id, header, content, last_used, "
         "original_category, order_index) VALUES (?, ?, ?, ?, ?, ?)",
-        (cold_file_id, row["header"], row["content"], row["last_used"],
+        (cold_batch_id, row["header"], row["content"], row["last_used"],
          row["category"], next_order),
     )
     _fts_delete_by_entry_id(conn, entry_id)
@@ -491,18 +497,18 @@ def move_entry_to_cold(
 
 
 def find_cold_entry(conn: sqlite3.Connection, header: str) -> dict[str, Any] | None:
-    """Look up a cold entry by header — newest cold file first.
+    """Look up a cold entry by header — newest cold batch first.
 
     Returned shape matches the reference plugin's note_recall payload.
     """
     row = conn.execute(
         """
         SELECT ce.header, ce.content, ce.last_used, ce.original_category,
-               cf.filename
+               cb.filename
           FROM cold_entries ce
-          JOIN cold_files   cf ON cf.id = ce.cold_file_id
+          JOIN cold_batches cb ON cb.id = ce.cold_batch_id
          WHERE ce.header = ?
-         ORDER BY cf.created DESC, ce.order_index ASC
+         ORDER BY cb.created DESC, ce.order_index ASC
          LIMIT 1
         """,
         (header,),
@@ -514,34 +520,34 @@ def find_cold_entry(conn: sqlite3.Connection, header: str) -> dict[str, Any] | N
         "content": row["content"],
         "last_used": row["last_used"],
         "original_category": row["original_category"],
-        "cold_filename": row["filename"],
+        "batch_filename": row["filename"],
     }
 
 
-def enforce_cold_file_limit(conn: sqlite3.Connection, max_files: int) -> int:
-    """Delete the oldest cold files past `max_files`. Returns count deleted."""
+def enforce_cold_batch_limit(conn: sqlite3.Connection, max_batches: int) -> int:
+    """Delete the oldest cold batches past `max_batches`. Returns count deleted."""
     rows = conn.execute(
-        "SELECT id FROM cold_files ORDER BY created ASC"
+        "SELECT id FROM cold_batches ORDER BY created ASC"
     ).fetchall()
-    if len(rows) <= max_files:
+    if len(rows) <= max_batches:
         return 0
-    to_delete = rows[: len(rows) - max_files]
+    to_delete = rows[: len(rows) - max_batches]
     for r in to_delete:
-        conn.execute("DELETE FROM cold_files WHERE id = ?", (r["id"],))
+        conn.execute("DELETE FROM cold_batches WHERE id = ?", (r["id"],))
     return len(to_delete)
 
 
-def list_cold_files(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def list_cold_batches(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute(
-        "SELECT id, filename, created FROM cold_files ORDER BY created"
+        "SELECT id, filename, created FROM cold_batches ORDER BY created"
     )]
 
 
-def list_cold_entries(conn: sqlite3.Connection, cold_file_id: int) -> list[dict[str, Any]]:
+def list_cold_entries(conn: sqlite3.Connection, cold_batch_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute(
         "SELECT header, content, last_used, original_category "
-        "FROM cold_entries WHERE cold_file_id = ? ORDER BY order_index, id",
-        (cold_file_id,),
+        "FROM cold_entries WHERE cold_batch_id = ? ORDER BY order_index, id",
+        (cold_batch_id,),
     )]
 
 

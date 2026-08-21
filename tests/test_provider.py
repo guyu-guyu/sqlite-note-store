@@ -26,7 +26,7 @@ def test_write_then_read(tmp_path):
     p = _new_provider(tmp_path)
     r = _call(p, "note_write", title="卡牌BR战斗流程", content="出牌→结算",
               category="game", tags="game,br")
-    assert r["created_new_file"] is True
+    assert r["created_new_group"] is True
     path = r["path"]
 
     # Default note_read returns a slim overview (no bodies).
@@ -64,12 +64,12 @@ def test_note_read_missing_entry_lists_available(tmp_path):
     p.shutdown()
 
 
-def test_second_write_appends_to_same_file(tmp_path):
+def test_second_write_appends_to_same_group(tmp_path):
     p = _new_provider(tmp_path)
     r1 = _call(p, "note_write", title="Notes", content="one", category="uncategorized")
     r2 = _call(p, "note_write", title="Notes", content="two", category="uncategorized")
     assert r1["path"] == r2["path"]
-    assert r2["created_new_file"] is False
+    assert r2["created_new_group"] is False
     doc = _call(p, "note_read_group", path=r1["path"])
     assert len(doc["entries"]) == 2
     p.shutdown()
@@ -133,7 +133,7 @@ def test_rewrite_clears_dirty_and_consumes_comments(tmp_path):
     p.shutdown()
 
 
-def test_rewrite_empty_deletes_file(tmp_path):
+def test_rewrite_empty_deletes_group(tmp_path):
     p = _new_provider(tmp_path)
     r = _call(p, "note_write", title="Del", content="bye")
     _call(p, "note_rewrite", path=r["path"], entries=[])
@@ -142,11 +142,11 @@ def test_rewrite_empty_deletes_file(tmp_path):
     p.shutdown()
 
 
-def test_maintain_returns_dirty_notes_and_does_not_clear_flag(tmp_path):
+def test_maintain_returns_dirty_groups_and_does_not_clear_flag(tmp_path):
     p = _new_provider(tmp_path)
     r = _call(p, "note_write", title="M", content="body")
     res = _call(p, "note_maintain")
-    assert r["path"] in res["dirty_notes"]
+    assert r["path"] in res["dirty_groups"]
 
     # Critical invariant: note_maintain must not have cleared dirty.
     doc = _call(p, "note_read", path=r["path"])

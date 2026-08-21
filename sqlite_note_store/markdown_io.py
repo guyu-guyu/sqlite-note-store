@@ -24,9 +24,9 @@ On-disk shape (mirrors markdown-note-store v1.1.0):
     ## <entry header> {last_used: ..., comments: [{"type": ..., ...}]}
     <entry body...>
 
-Cold storage files are plain markdown — the YAML block is intentionally
-omitted (filename encodes the date; dirty/title are meaningless in a
-time-queue archive).
+Cold-storage batch files are plain markdown — the YAML block is
+intentionally omitted (filename encodes the date; dirty/title are
+meaningless in a time-queue archive).
 
 Reference used (read-only):
   /projects/markdown-note-store-plugin/markdown_note_store/__init__.py

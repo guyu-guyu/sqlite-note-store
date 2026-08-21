@@ -6,19 +6,22 @@ Design principle (SOT for readers):
 
 Mapping (markdown ↔ SQL):
 
-    A markdown file `<category>/<slug>.md` ↔ one row in `files`.
-      YAML front matter fields (title, tags, dirty, created, updated)
-      become columns; the `slug` column reconstructs the filename;
-      `path = category + '/' + slug + '.md'` is UNIQUE.
+    SQLite is the store of record; "file" is only the exported shape.
+    In the DB, a markdown file `<category>/<slug>.md` is one row in
+    `groups` — a thematic container of similar entries (exported as
+    one .md file). YAML front matter fields (title, tags, dirty, created,
+    updated) become columns; the `slug` column reconstructs the filename;
+    `path = category + '/' + slug + '.md'` is UNIQUE.
 
-    An `## <header>` block inside that file ↔ one row in `entries`, ordered
-      by `order_index` (the position inside the file, ascending). Inline
+    An `## <header>` block inside that group ↔ one row in `entries`, ordered
+      by `order_index` (the position inside the group, ascending). Inline
       metadata suffixes `{last_used: ...}` and `{comments: [...]}` become
       real columns/JSON.
 
-    A file inside `cold-storage/<YYYY-MM-DD[-NN]>.md` is a plain-markdown
-      archive of moved entries. Cold entries live in `cold_entries`, one row
-      per `## <header>` block. They preserve their original category (via
+    A batch inside `cold-storage/<YYYY-MM-DD[-NN]>.md` is a plain-markdown
+      archive of moved entries (one row in `cold_batches` — a time-queue
+      batch, not a topical group). Cold entries live in `cold_entries`, one
+      row per `## <header>` block. They preserve their original category (via
       `original_category`) so recall doesn't guess and export can reproduce
       the flat cold-storage/ directory shape verbatim.
 
@@ -52,7 +55,8 @@ _DDL_STATEMENTS = [
       value TEXT NOT NULL
     )
     """,
-    # files: one row per active markdown file.
+    # groups: one row per active group — the thematic container of
+    # similar entries, exported as a single markdown file.
     #
     #   path      — 'category/slug.md' — matches on-disk relative path, UNIQUE.
     #   category  — first path segment ('uncategorized' when absent).
@@ -62,7 +66,7 @@ _DDL_STATEMENTS = [
     #   dirty     — 0/1, mirrors YAML `dirty:` — cleared by note_rewrite.
     #   created/updated — ISO 8601 UTC, mirrors YAML `created:` / `updated:`.
     """
-    CREATE TABLE IF NOT EXISTS files (
+    CREATE TABLE IF NOT EXISTS groups (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       path       TEXT NOT NULL UNIQUE,
       category   TEXT NOT NULL,
@@ -74,11 +78,11 @@ _DDL_STATEMENTS = [
       updated    TEXT NOT NULL
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_files_category ON files(category)",
-    "CREATE INDEX IF NOT EXISTS idx_files_dirty ON files(dirty) WHERE dirty = 1",
-    # entries: one row per '## <header>' section inside a file.
+    "CREATE INDEX IF NOT EXISTS idx_groups_category ON groups(category)",
+    "CREATE INDEX IF NOT EXISTS idx_groups_dirty ON groups(dirty) WHERE dirty = 1",
+    # entries: one row per '## <header>' section inside a group.
     #
-    #   file_id     — FK to files.id, CASCADE on delete so removing a file
+    #   group_id    — FK to groups.id, CASCADE on delete so removing a group
     #                 nukes its entries in one shot.
     #   header      — the '## <text>' heading, without decorations.
     #   content     — the body between this heading and the next (trimmed).
@@ -86,12 +90,12 @@ _DDL_STATEMENTS = [
     #                 cold-storage eviction; rendered inline as {last_used: …}.
     #   comments    — JSON list of {type, text, timestamp}. Mirrors the
     #                 inline `{comments: [...]}` suffix in the markdown header.
-    #   order_index — position inside the file (0-based). Preserves the
-    #                 in-file ordering the LLM chose when rewriting.
+    #   order_index — position inside the group (0-based). Preserves the
+    #                 in-group ordering the LLM chose when rewriting.
     """
     CREATE TABLE IF NOT EXISTS entries (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+      group_id    INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
       header      TEXT NOT NULL,
       content     TEXT NOT NULL,
       last_used   TEXT,
@@ -99,36 +103,37 @@ _DDL_STATEMENTS = [
       order_index INTEGER NOT NULL DEFAULT 0
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_entries_file ON entries(file_id, order_index)",
+    "CREATE INDEX IF NOT EXISTS idx_entries_group ON entries(group_id, order_index)",
     "CREATE INDEX IF NOT EXISTS idx_entries_last_used ON entries(last_used)",
-    # cold_files: one row per file inside cold-storage/.
+    # cold_batches: one row per archive batch inside cold-storage/ — a
+    # time-queue batch named by creation date, NOT a topical group.
     #
     #   filename — 'YYYY-MM-DD.md' or 'YYYY-MM-DD-NN.md'. UNIQUE.
     #   created  — ISO 8601 UTC — cold-storage sort key for eviction (oldest
-    #              file wins). We use created_at rather than filename parse
+    #              batch wins). We use created_at rather than filename parse
     #              so timezone-shifted filenames still order correctly.
     """
-    CREATE TABLE IF NOT EXISTS cold_files (
+    CREATE TABLE IF NOT EXISTS cold_batches (
       id       INTEGER PRIMARY KEY AUTOINCREMENT,
       filename TEXT NOT NULL UNIQUE,
       created  TEXT NOT NULL
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_cold_files_created ON cold_files(created)",
-    # cold_entries: one row per '## <header>' block inside a cold file.
+    "CREATE INDEX IF NOT EXISTS idx_cold_batches_created ON cold_batches(created)",
+    # cold_entries: one row per '## <header>' block inside a cold batch.
     #
-    #   cold_file_id       — which archive file this lives in (drives export).
+    #   cold_batch_id      — which archive batch this lives in (drives export).
     #   header/content     — same shape as entries.
     #   last_used          — preserved from the active entry at move time.
     #   original_category  — where it lived before eviction; used when
     #                        note_recall wants to hint the LLM where to
     #                        re-file the content. Cold storage itself never
     #                        cares about it.
-    #   order_index        — position inside the cold file, ascending.
+    #   order_index        — position inside the cold batch, ascending.
     """
     CREATE TABLE IF NOT EXISTS cold_entries (
       id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-      cold_file_id       INTEGER NOT NULL REFERENCES cold_files(id) ON DELETE CASCADE,
+      cold_batch_id      INTEGER NOT NULL REFERENCES cold_batches(id) ON DELETE CASCADE,
       header             TEXT NOT NULL,
       content            TEXT NOT NULL,
       last_used          TEXT,
@@ -136,13 +141,11 @@ _DDL_STATEMENTS = [
       order_index        INTEGER NOT NULL DEFAULT 0
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_cold_entries_file ON cold_entries(cold_file_id, order_index)",
+    "CREATE INDEX IF NOT EXISTS idx_cold_entries_batch ON cold_entries(cold_batch_id, order_index)",
     "CREATE INDEX IF NOT EXISTS idx_cold_entries_header ON cold_entries(header)",
-    # entries_fts: FTS5 virtual table shadowing entries — this is the search
-    # backing store. content='entries' + content_rowid='id' lets FTS5 own
-    # nothing but tokens; the real row lives in `entries`. Triggers below
-    # keep them in sync automatically, so writers only touch `entries`.
     # entries_fts: FTS5 virtual table shadowing the searchable columns.
+    # The shadow rows are maintained explicitly by storage.py (not by SQL
+    # triggers — see storage._fts_*) so every write path is auditable.
     # We keep it as a regular (non-contentless) FTS5 table so DELETE ops
     # work on every SQLite build we ship against. The index stores its
     # own copy of the tokens; storage overhead is bounded by note volume
@@ -150,7 +153,7 @@ _DDL_STATEMENTS = [
     # migration risk.
     """
     CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-      header, content, category, file_title, file_path,
+      header, content, category, group_title, group_path,
       tokenize='porter unicode61'
     )
     """,
@@ -193,10 +196,9 @@ def connect(note_root: Path) -> sqlite3.Connection:
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     """Bring an existing DB up to SCHEMA_VERSION.
 
-    v0 (no schema_meta row) → v1: run all DDL. Every subsequent version
-    should append a `if current < N: ...` branch here rather than
-    mutating _DDL_STATEMENTS. That keeps migrations replayable and lets
-    us test the upgrade path from any historical version.
+    The plugin is pre-release: the DDL list IS the current shape and there
+    is no legacy-DB upgrade path. When the schema changes, edit
+    _DDL_STATEMENTS in place and bump SCHEMA_VERSION for observability.
     """
     for ddl in _DDL_STATEMENTS:
         conn.execute(ddl)

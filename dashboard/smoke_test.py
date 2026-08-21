@@ -17,22 +17,22 @@ from sqlite_note_store.schema import connect
 
 conn = connect(Path(tmpdir))
 conn.execute(
-    "INSERT INTO files (path, category, slug, title, tags, dirty, created, updated) "
+    "INSERT INTO groups (path, category, slug, title, tags, dirty, created, updated) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    ("uncategorized/test.md", "uncategorized", "test", "测试文件",
+    ("uncategorized/test.md", "uncategorized", "test", "测试组",
      '["tag1"]', 0, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
 )
-file_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+group_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 conn.execute(
-    "INSERT INTO entries (file_id, header, content, comments, order_index) "
+    "INSERT INTO entries (group_id, header, content, comments, order_index) "
     "VALUES (?, ?, ?, ?, ?)",
-    (file_id, "第一个条目", "这是测试内容\n多行\n多行", '[]', 0),
+    (group_id, "第一个条目", "这是测试内容\n多行\n多行", '[]', 0),
 )
 e1 = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 conn.execute(
-    "INSERT INTO entries (file_id, header, content, comments, order_index) "
+    "INSERT INTO entries (group_id, header, content, comments, order_index) "
     "VALUES (?, ?, ?, ?, ?)",
-    (file_id, "第二个条目", "搜索关键词在这里", '[]', 1),
+    (group_id, "第二个条目", "搜索关键词在这里", '[]', 1),
 )
 e2 = e1 + 1
 # FTS5 同步
@@ -41,9 +41,9 @@ for eid, hdr, ctnt in [
     (e2, "第二个条目", "搜索关键词在这里"),
 ]:
     conn.execute(
-        "INSERT INTO entries_fts(rowid, header, content, category, file_title, file_path) "
+        "INSERT INTO entries_fts(rowid, header, content, category, group_title, group_path) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (eid, hdr, ctnt, "uncategorized", "测试文件", "uncategorized/test.md"),
+        (eid, hdr, ctnt, "uncategorized", "测试组", "uncategorized/test.md"),
     )
 conn.commit()
 conn.close()
@@ -73,14 +73,14 @@ r = client.get("/api/plugins/notes/stats")
 assert r.status_code == 200, f"GET /stats failed: {r.text}"
 stats = r.json()
 assert stats["total_entries"] == 2
-assert stats["total_files"] == 1
-print(f"  ✓ GET /stats — {stats['total_entries']} entries, {stats['total_files']} files")
+assert stats["total_groups"] == 1
+print(f"  ✓ GET /stats — {stats['total_entries']} entries, {stats['total_groups']} groups")
 
 # 3. GET /files/{id}
-r = client.get(f"/api/plugins/notes/files/{file_id}")
+r = client.get(f"/api/plugins/notes/files/{group_id}")
 assert r.status_code == 200, f"GET /files failed: {r.text}"
 assert len(r.json()["entries"]) == 2
-print(f"  ✓ GET /files/{file_id} — {len(r.json()['entries'])} entries")
+print(f"  ✓ GET /files/{group_id} — {len(r.json()['entries'])} entries")
 
 # 4. GET /entries/{id}
 r = client.get(f"/api/plugins/notes/entries/{e1}")
@@ -98,7 +98,7 @@ print(f"  ✓ PUT /entries/{e1} — content updated")
 
 # 6. POST /entries — 新建
 r = client.post("/api/plugins/notes/entries", json={
-    "file_id": file_id, "header": "新条目", "content": "新建内容"
+    "file_id": group_id, "header": "新条目", "content": "新建内容"
 })
 assert r.status_code == 200, f"POST /entries failed: {r.text}"
 new_id = r.json()["id"]
@@ -114,7 +114,7 @@ print(f"  ✓ GET /search — {r.json()['count']} results for '搜索关键词'"
 r = client.get("/api/plugins/notes/cold")
 assert r.status_code == 200, f"GET /cold failed: {r.text}"
 assert r.json()["total"] == 0
-print(f"  ✓ GET /cold — {r.json()['total']} cold files")
+print(f"  ✓ GET /cold — {r.json()['total']} cold batches")
 
 # 9. DELETE /entries/{id}
 r = client.delete(f"/api/plugins/notes/entries/{new_id}")

@@ -19,17 +19,17 @@ from sqlite_note_store import export, markdown_io, schema, storage
 
 
 def _seed_conn(tmp_path):
-    """Build a representative fixture DB: two active files + 1 cold archive."""
+    """Build a representative fixture DB: two active groups + 1 cold batch."""
     conn = schema.connect(tmp_path)
 
-    # File 1: category with tags and comments.
-    fid1 = storage.upsert_file(
+    # Group 1: category with tags and comments.
+    gid1 = storage.upsert_group(
         conn, path="game/br.md", category="game", slug="br", title="卡牌BR",
         tags=["game", "br"], dirty=True,
         created="2026-08-01T00:00:00+00:00",
         updated="2026-08-20T00:00:00+00:00",
     )
-    storage.replace_entries(conn, fid1, [
+    storage.replace_entries(conn, gid1, [
         markdown_io.ParsedEntry(
             header="战斗流程", content="出牌 → 结算",
             last_used="2026-08-15T00:00:00+00:00",
@@ -45,25 +45,25 @@ def _seed_conn(tmp_path):
         ),
     ])
 
-    # File 2: uncategorized single-entry file, no tags.
-    fid2 = storage.upsert_file(
+    # Group 2: uncategorized single-entry group, no tags.
+    gid2 = storage.upsert_group(
         conn, path="uncategorized/notes.md", category="uncategorized",
         slug="notes", title="Notes", tags=[], dirty=False,
         created="2026-08-01T00:00:00+00:00",
         updated="2026-08-10T00:00:00+00:00",
     )
-    storage.append_entry(conn, fid2, header="lone entry", content="just this")
+    storage.append_entry(conn, gid2, header="lone entry", content="just this")
 
-    # Cold storage file.
+    # Cold storage batch.
     conn.execute(
-        "INSERT INTO cold_files(filename, created) VALUES "
+        "INSERT INTO cold_batches(filename, created) VALUES "
         "('2026-07-01.md', '2026-07-01T00:00:00+00:00')"
     )
-    cold_id = conn.execute("SELECT id FROM cold_files").fetchone()["id"]
+    batch_id = conn.execute("SELECT id FROM cold_batches").fetchone()["id"]
     conn.execute(
-        "INSERT INTO cold_entries(cold_file_id, header, content, last_used, "
+        "INSERT INTO cold_entries(cold_batch_id, header, content, last_used, "
         "original_category, order_index) VALUES (?, ?, ?, ?, ?, ?)",
-        (cold_id, "old header", "old body", "2026-06-01T00:00:00+00:00",
+        (batch_id, "old header", "old body", "2026-06-01T00:00:00+00:00",
          "game", 0),
     )
     conn.commit()
@@ -76,7 +76,7 @@ def test_export_writes_expected_shape(tmp_path):
     stats = export.export_to_directory(conn, out)
     conn.close()
 
-    assert stats == {"files": 2, "entries": 3, "cold_files": 1, "cold_entries": 1}
+    assert stats == {"groups": 2, "entries": 3, "cold_batches": 1, "cold_entries": 1}
 
     # Directory layout matches markdown-note-store convention.
     assert (out / "INDEX.md").exists()
@@ -84,7 +84,7 @@ def test_export_writes_expected_shape(tmp_path):
     assert (out / "uncategorized" / "notes.md").exists()
     assert (out / "cold-storage" / "2026-07-01.md").exists()
 
-    # File 1: YAML block + inline metadata suffix survived.
+    # Group 1: YAML block + inline metadata suffix survived.
     br_text = (out / "game" / "br.md").read_text(encoding="utf-8")
     assert "title: 卡牌BR" in br_text
     assert "tags: [game, br]" in br_text
@@ -109,14 +109,14 @@ def test_import_roundtrip_is_idempotent(tmp_path):
     # Fresh DB → import from the exported dir.
     dst_conn = schema.connect(tmp_path / "dst_db")
     stats = export.import_from_directory(dst_conn, export_dir, replace=True)
-    assert stats["files"] == 2
+    assert stats["groups"] == 2
     assert stats["entries"] == 3
-    assert stats["cold_files"] == 1
+    assert stats["cold_batches"] == 1
     assert stats["cold_entries"] == 1
 
-    # DB state matches: file rows.
-    files = storage.list_files(dst_conn)
-    paths = {f.path: f for f in files}
+    # DB state matches: group rows.
+    groups = storage.list_groups(dst_conn)
+    paths = {g.path: g for g in groups}
     assert set(paths) == {"game/br.md", "uncategorized/notes.md"}
 
     br = paths["game/br.md"]
@@ -132,10 +132,10 @@ def test_import_roundtrip_is_idempotent(tmp_path):
     assert br_entries[1].comments[0]["type"] == "needs_improvement"
 
     # Cold-storage fidelity.
-    cold_files = storage.list_cold_files(dst_conn)
-    assert len(cold_files) == 1
-    assert cold_files[0]["filename"] == "2026-07-01.md"
-    cold_entries = storage.list_cold_entries(dst_conn, cold_files[0]["id"])
+    cold_batches = storage.list_cold_batches(dst_conn)
+    assert len(cold_batches) == 1
+    assert cold_batches[0]["filename"] == "2026-07-01.md"
+    cold_entries = storage.list_cold_entries(dst_conn, cold_batches[0]["id"])
     assert cold_entries[0]["header"] == "old header"
     assert cold_entries[0]["content"] == "old body"
 
@@ -164,8 +164,8 @@ def test_import_creates_uncategorized_for_root_md(tmp_path):
 
     conn = schema.connect(tmp_path / "db")
     stats = export.import_from_directory(conn, in_root)
-    assert stats["files"] == 1
-    row = storage.get_file_by_path(conn, "uncategorized/loose.md")
+    assert stats["groups"] == 1
+    row = storage.get_group_by_path(conn, "uncategorized/loose.md")
     assert row is not None
     assert row.title == "Loose"
     conn.close()
@@ -181,7 +181,7 @@ def test_export_clean_removes_stale_files(tmp_path):
     conn = _seed_conn(tmp_path / "db")
     # Force the DB to include 'old' so clean sweeps it.
     conn.execute(
-        "INSERT INTO files(path, category, slug, title, tags, dirty, created, updated) "
+        "INSERT INTO groups(path, category, slug, title, tags, dirty, created, updated) "
         "VALUES ('old/stale.md', 'old', 'stale', 'Stale', '[]', 0, "
         "'2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00')"
     )
@@ -230,11 +230,11 @@ def test_import_from_reference_plugin_shape(tmp_path):
 
     conn = schema.connect(tmp_path / "db")
     stats = export.import_from_directory(conn, in_root)
-    assert stats["files"] == 1  # INDEX.md skipped
+    assert stats["groups"] == 1  # INDEX.md skipped
     assert stats["entries"] == 2
     assert stats["cold_entries"] == 1
 
-    row = storage.get_file_by_path(conn, "productivity/workflows.md")
+    row = storage.get_group_by_path(conn, "productivity/workflows.md")
     assert row.tags == ["work", "ops"]
     entries = storage.list_entries(conn, row.id)
     assert entries[0].header == "daily-standup"

@@ -7,8 +7,8 @@ SQLite; everything above it is byte-compatible with the old plugin.
 
 Tool surface (identical names, identical response shapes):
     note_search   — FTS5 across active entries only (never cold).
-    note_write    — append or replace an entry; auto-slug title → file.
-    note_read     — dump a single active file's content, YAML + entries.
+    note_write    — append or replace an entry; auto-slug title → group.
+    note_read     — dump a single active group's entries, slim or single.
     note_use      — refresh an entry's `last_used`.
     note_recall   — read a cold-storage entry, no mutation to cold side.
     note_comment  — attach an ephemeral TODO to an entry, marks dirty.
@@ -19,12 +19,16 @@ Design decisions honored (see hermes-memory-provider skill):
     - Python detects, LLM decides, note_rewrite persists.
     - note_maintain NEVER clears the dirty flag on its own.
     - Cold storage is an append-to-latest queue keyed on the newest cold
-      file's `created` timestamp — not a per-day partition.
-    - Entries are the atomic unit of memory; files are grouping
-      containers with file-level dirty.
+      batch's `created` timestamp — not a per-day partition.
+    - Entries are the atomic unit of memory; groups are grouping
+      containers with group-level dirty.
     - Every mutation goes through a single write connection guarded by
       `self._lock` — matches the "one connection, one lock" resolution
       of the audit pitfall #14.
+
+Terminology: a `group` is the thematic container of similar entries —
+the DB-side counterpart of what exports as one `category/slug.md` file.
+Cold storage holds time-queue `batches`, not topical groups.
 """
 
 from __future__ import annotations
@@ -47,9 +51,9 @@ logger = logging.getLogger(__name__)
 # Tunable defaults — mirror the reference plugin's numbers so the two
 # implementations behave interchangeably when swapping.
 DEFAULT_COLD_EVICT_DAYS = 90
-DEFAULT_MAX_COLD_FILES = 50
-DEFAULT_MAX_ACTIVE_FILE_SIZE_BYTES = 50 * 1024  # 50 KB soft cap
-DEFAULT_MAX_FILES_PER_CATEGORY = 50
+DEFAULT_MAX_COLD_BATCHES = 50
+DEFAULT_MAX_ACTIVE_GROUP_SIZE_BYTES = 50 * 1024  # 50 KB soft cap
+DEFAULT_MAX_GROUPS_PER_CATEGORY = 50
 DEFAULT_PREFETCH_CHAR_LIMIT = 2000
 DEFAULT_TOOL_SEARCH_LIMIT = 5
 
@@ -82,9 +86,9 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         self._lock = threading.RLock()
         # Config knobs — populated in `initialize()` from Hermes config.
         self._cold_evict_days = DEFAULT_COLD_EVICT_DAYS
-        self._max_cold_files = DEFAULT_MAX_COLD_FILES
-        self._max_active_file_size = DEFAULT_MAX_ACTIVE_FILE_SIZE_BYTES
-        self._max_files_per_category = DEFAULT_MAX_FILES_PER_CATEGORY
+        self._max_cold_batches = DEFAULT_MAX_COLD_BATCHES
+        self._max_active_group_size = DEFAULT_MAX_ACTIVE_GROUP_SIZE_BYTES
+        self._max_groups_per_category = DEFAULT_MAX_GROUPS_PER_CATEGORY
         self._prefetch_char_limit = DEFAULT_PREFETCH_CHAR_LIMIT
         self._pending_prefetch_query: str | None = None
         self._cached_prefetch_result: str = ""
@@ -158,10 +162,10 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         return (
             "# Note Repository (sqlite-note-store)\n"
             "Persistent memory keyed on `title` (auto-slugged to a file). "
-            "Reading path: scan the index below first to spot the right file, "
+            "Reading path: scan the index below first to spot the right group, "
             "then `note_read(path)` for a slim headers overview, then "
             "`note_read(path, entry_header)` to fetch just the entry you want — "
-            "cheap on context. Only during maintenance (processing a dirty file) "
+            "cheap on context. Only during maintenance (processing a dirty group) "
             "use `note_read_group(path)` to see every entry's body. "
             "Fall back to `note_search(query)` when the index doesn't match. "
             "Writing path: `note_write(title, content, category, tags)`. "
@@ -228,7 +232,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "description": (
                     "Search the SQLite-backed note repository for relevant "
                     "entries. IMPORTANT: First check the INDEX in the system "
-                    "prompt for matching file titles. Only use this search when "
+                    "prompt for matching group titles. Only use this search when "
                     "INDEX doesn't have what you need. Excludes cold-storage."
                 ),
                 "parameters": {
@@ -244,9 +248,9 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "name": "note_write",
                 "description": (
                     "Persist a note entry. IMPORTANT: Provide a descriptive, "
-                    "meaningful title — it determines the filename and helps "
-                    "future retrieval via INDEX. Do NOT use generic titles "
-                    "like 'note' or 'memo'."
+                    "meaningful title — it determines the group's slug/filename "
+                    "and helps future retrieval via INDEX. Do NOT use generic "
+                    "titles like 'note' or 'memo'."
                 ),
                 "parameters": {
                     "type": "object",
@@ -262,11 +266,11 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             {
                 "name": "note_read",
                 "description": (
-                    "Read a single note entry (default) or a slim file "
+                    "Read a single note entry (default) or a slim group "
                     "overview. Pass `entry_header` to fetch that specific "
                     "entry's full content — this is the token-efficient "
                     "default for day-to-day recall. Omit `entry_header` to "
-                    "get just the file's title + headers list, then decide "
+                    "get just the group's title + headers list, then decide "
                     "which entry to load. For maintenance (reading every "
                     "entry to merge/dedupe), use `note_read_group` instead."
                 ),
@@ -291,8 +295,8 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             {
                 "name": "note_read_group",
                 "description": (
-                    "Read every entry in a file with full content. Use this "
-                    "during MAINTENANCE (when processing a dirty file so you "
+                    "Read every entry in a group with full content. Use this "
+                    "during MAINTENANCE (when processing a dirty group so you "
                     "can see all entries together for merge/dedupe/split "
                     "decisions). For normal recall, prefer `note_read` with "
                     "an `entry_header` — it's much cheaper on context."
@@ -328,7 +332,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "name": "note_recall",
                 "description": (
                     "Read an entry from cold storage without modifying the "
-                    "cold-storage file. Returns the content — use note_write "
+                    "cold-storage batch. Returns the content — use note_write "
                     "to save it back to the active repository."
                 ),
                 "parameters": {
@@ -343,7 +347,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "name": "note_comment",
                 "description": (
                     "Flag an issue with an entry (ephemeral TODO). Marks the "
-                    "file dirty so it surfaces in the next note_maintain. "
+                    "group dirty so it surfaces in the next note_maintain. "
                     "Only comment when there's an actual problem — do NOT "
                     "comment on entries that are correct and useful."
                 ),
@@ -376,10 +380,10 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "name": "note_maintain",
                 "description": (
                     "Run mechanical maintenance: cold-eviction, oversized "
-                    "file detection, INDEX regeneration. Returns "
-                    "`dirty_notes`, `oversized_files`, "
+                    "group detection, INDEX regeneration. Returns "
+                    "`dirty_groups`, `oversized_groups`, "
                     "`overpopulated_categories` — the LLM must resolve each "
-                    "by reading the file and calling note_rewrite. "
+                    "by reading the group and calling note_rewrite. "
                     "note_maintain NEVER clears dirty on its own."
                 ),
                 "parameters": {
@@ -392,9 +396,9 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             {
                 "name": "note_rewrite",
                 "description": (
-                    "Replace a file's entries with the given curated list, "
+                    "Replace a group's entries with the given curated list, "
                     "clearing dirty and consuming any comments. entries=[] "
-                    "deletes the file. This is the SOLE dirty-clearing tool."
+                    "deletes the group. This is the SOLE dirty-clearing tool."
                 ),
                 "parameters": {
                     "type": "object",
@@ -477,13 +481,13 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         slug = storage.slugify(title)
         path = storage.build_path(category, slug)
 
-        # If the file already exists, append; otherwise create fresh.
-        existing = storage.get_file_by_path(self._conn, path)
+        # If the group already exists, append; otherwise create fresh.
+        existing = storage.get_group_by_path(self._conn, path)
         if existing:
-            file_id = existing.id
-            # Preserve the file's existing title/tags unless caller changed.
+            group_id = existing.id
+            # Preserve the group's existing title/tags unless caller changed.
             merged_tags = sorted(set(existing.tags) | set(tags))
-            storage.upsert_file(
+            storage.upsert_group(
                 self._conn,
                 path=path,
                 category=category,
@@ -494,7 +498,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 created=existing.created,
             )
         else:
-            file_id = storage.upsert_file(
+            group_id = storage.upsert_group(
                 self._conn,
                 path=path,
                 category=category,
@@ -510,19 +514,19 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             "%Y-%m-%d %H:%M"
         )
         entry_id = storage.append_entry(
-            self._conn, file_id, header=header, content=content,
+            self._conn, group_id, header=header, content=content,
             last_used=storage._now(),
         )
         return {
             "status": "ok",
             "path": path,
-            "file_id": file_id,
+            "group_id": group_id,
             "entry_id": entry_id,
-            "created_new_file": existing is None,
+            "created_new_group": existing is None,
         }
 
     def _tool_note_read(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Read a single entry (default) or a slim file overview.
+        """Read a single entry (default) or a slim group overview.
 
         Two modes — never returns full content for all entries:
           * ``entry_header`` given → return that single entry.
@@ -534,7 +538,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         full content, call ``note_read_group`` instead.
         """
         path = args["path"]
-        row = storage.get_file_by_path(self._conn, path)
+        row = storage.get_group_by_path(self._conn, path)
         if row is None:
             return {"error": f"note not found: {path}"}
 
@@ -578,14 +582,14 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         }
 
     def _tool_note_read_group(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Read every entry in a file — the maintenance-time reader.
+        """Read every entry in a group — the maintenance-time reader.
 
         Kept as a separate tool from ``note_read`` so day-to-day recall
         can stay lean while maintenance workflows still get the full
         neighbor context they need to merge / dedupe / re-organize.
         """
         path = args["path"]
-        row = storage.get_file_by_path(self._conn, path)
+        row = storage.get_group_by_path(self._conn, path)
         if row is None:
             return {"error": f"note not found: {path}"}
         entries = storage.list_entries(self._conn, row.id)
@@ -611,7 +615,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
     def _tool_note_use(self, args: dict[str, Any]) -> dict[str, Any]:
         path = args["path"]
         header = args["entry_header"]
-        row = storage.get_file_by_path(self._conn, path)
+        row = storage.get_group_by_path(self._conn, path)
         if row is None:
             return {"error": f"note not found: {path}"}
         entry = storage.find_entry(self._conn, row.id, header)
@@ -632,7 +636,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
     def _tool_note_comment(self, args: dict[str, Any]) -> dict[str, Any]:
         path = args["path"]
         header = args["entry_header"]
-        row = storage.get_file_by_path(self._conn, path)
+        row = storage.get_group_by_path(self._conn, path)
         if row is None:
             return {"error": f"note not found: {path}"}
         entry = storage.find_entry(self._conn, row.id, header)
@@ -648,12 +652,12 @@ class SQLiteNoteStoreProvider(MemoryProvider):
 
     def _tool_note_rewrite(self, args: dict[str, Any]) -> dict[str, Any]:
         path = args["path"]
-        row = storage.get_file_by_path(self._conn, path)
+        row = storage.get_group_by_path(self._conn, path)
         if row is None:
             return {"error": f"note not found: {path}"}
         raw_entries = args.get("entries") or []
         if not raw_entries:
-            storage.delete_file(self._conn, row.id)
+            storage.delete_group(self._conn, row.id)
             return {"status": "ok", "action": "deleted", "path": path}
         entries = [
             markdown_io.ParsedEntry(
@@ -679,87 +683,87 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         stale = storage.select_stale_active_entries(self._conn, threshold_iso)
         cold_moved = 0
         if stale:
-            cold_id = storage.get_or_create_cold_file_for_today(self._conn)
+            batch_id = storage.get_or_create_cold_batch_for_today(self._conn)
             for e in stale:
-                storage.move_entry_to_cold(self._conn, e.id, cold_file_id=cold_id)
+                storage.move_entry_to_cold(self._conn, e.id, cold_batch_id=batch_id)
                 cold_moved += 1
 
-        # 2) Enforce cold-file cap — sole physical-delete path in the system.
-        cold_files_pruned = storage.enforce_cold_file_limit(
-            self._conn, max_files=self._max_cold_files
+        # 2) Enforce cold-batch cap — sole physical-delete path in the system.
+        cold_batches_pruned = storage.enforce_cold_batch_limit(
+            self._conn, max_batches=self._max_cold_batches
         )
 
-        # 3) Detect oversized files & overpopulated categories → force dirty.
-        oversized = self._detect_oversized_files()
+        # 3) Detect oversized groups & overpopulated categories → force dirty.
+        oversized = self._detect_oversized_groups()
         overpop = self._detect_overpopulated_categories()
-        for path in oversized:
-            row = storage.get_file_by_path(self._conn, path["path"])
+        for g in oversized:
+            row = storage.get_group_by_path(self._conn, g["path"])
             if row:
                 storage.mark_dirty(self._conn, row.id, True)
         for entry in overpop:
-            for p in entry["files"][
-                : max(0, entry["file_count"] - self._max_files_per_category)
+            for p in entry["groups"][
+                : max(0, entry["group_count"] - self._max_groups_per_category)
             ]:
-                row = storage.get_file_by_path(self._conn, p)
+                row = storage.get_group_by_path(self._conn, p)
                 if row:
                     storage.mark_dirty(self._conn, row.id, True)
 
-        # 4) Enumerate dirty files — LLM must resolve each with note_rewrite.
-        dirty_files = storage.list_files(self._conn, dirty_only=True)
-        dirty_notes = [f.path for f in dirty_files]
+        # 4) Enumerate dirty groups — LLM must resolve each with note_rewrite.
+        dirty_groups = storage.list_groups(self._conn, dirty_only=True)
+        dirty_group_paths = [g.path for g in dirty_groups]
 
         return {
-            "dirty_notes": dirty_notes,
+            "dirty_groups": dirty_group_paths,
             "cold_moved": cold_moved,
-            "cold_files_pruned": cold_files_pruned,
-            "oversized_files": oversized,
+            "cold_batches_pruned": cold_batches_pruned,
+            "oversized_groups": oversized,
             "overpopulated_categories": overpop,
         }
 
     # ---- maintenance detectors -------------------------------------------
 
-    def _detect_oversized_files(self) -> list[dict[str, Any]]:
-        """Files whose rendered markdown would exceed the size cap.
+    def _detect_oversized_groups(self) -> list[dict[str, Any]]:
+        """Groups whose rendered markdown would exceed the size cap.
 
         We compute the size against the *rendered* form because that's
-        what the LLM will see when it reads the file — bytes on disk
+        what the LLM will see when it reads the group — bytes on disk
         are the honest signal for whether a split is warranted.
         """
         oversized: list[dict[str, Any]] = []
-        for f in storage.list_files(self._conn):
-            entries = storage.list_entries(self._conn, f.id)
+        for g in storage.list_groups(self._conn):
+            entries = storage.list_entries(self._conn, g.id)
             text = markdown_io.render_file(
-                {"title": f.title, "tags": f.tags, "dirty": f.dirty,
-                 "created": f.created, "updated": f.updated},
+                {"title": g.title, "tags": g.tags, "dirty": g.dirty,
+                 "created": g.created, "updated": g.updated},
                 [markdown_io.ParsedEntry(
                     header=e.header, content=e.content,
                     last_used=e.last_used, comments=e.comments,
                 ) for e in entries],
             )
             size = len(text.encode("utf-8"))
-            if size > self._max_active_file_size:
+            if size > self._max_active_group_size:
                 oversized.append({
-                    "path": f.path,
+                    "path": g.path,
                     "size_bytes": size,
                     "size_kb": round(size / 1024, 1),
                 })
         return oversized
 
     def _detect_overpopulated_categories(self) -> list[dict[str, Any]]:
-        """Categories with more files than allowed."""
+        """Categories with more groups than allowed."""
         out: list[dict[str, Any]] = []
-        by_cat: dict[str, list[storage.FileRow]] = {}
-        for f in storage.list_files(self._conn):
-            by_cat.setdefault(f.category, []).append(f)
-        for cat, files in by_cat.items():
-            if len(files) > self._max_files_per_category:
+        by_cat: dict[str, list[storage.GroupRow]] = {}
+        for g in storage.list_groups(self._conn):
+            by_cat.setdefault(g.category, []).append(g)
+        for cat, groups in by_cat.items():
+            if len(groups) > self._max_groups_per_category:
                 # Sort oldest-first by `created` so the oldest slice gets
                 # force-dirty'd — matches the reference plugin's rule.
-                files_sorted = sorted(files, key=lambda r: r.created)
+                groups_sorted = sorted(groups, key=lambda r: r.created)
                 out.append({
                     "category": cat,
-                    "file_count": len(files),
-                    "files": [f.path for f in files_sorted],
+                    "group_count": len(groups),
+                    "groups": [g.path for g in groups_sorted],
                 })
         return out
 
