@@ -420,6 +420,26 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                     "required": ["path", "entries"],
                 },
             },
+            {
+                "name": "note_move",
+                "description": (
+                    "Move a group to another category (its slug/filename "
+                    "stays the same). Use this for hierarchy maintenance: "
+                    "promote a group up a level, nest it deeper, or merge "
+                    "categories by moving all groups of one category into "
+                    "another. Errors if the target path already exists — "
+                    "merge via note_rewrite first or pick another category. "
+                    "Does not mark dirty."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "current group path like 'category/slug.md'"},
+                        "new_category": {"type": "string", "description": "target category path, e.g. 'game/br' or 'game'"},
+                    },
+                    "required": ["path", "new_category"],
+                },
+            },
         ]
 
     # -- tool dispatch ------------------------------------------------------
@@ -671,6 +691,23 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         storage.replace_entries(self._conn, row.id, entries)
         storage.mark_dirty(self._conn, row.id, dirty=False)
         return {"status": "ok", "action": "rewritten", "entry_count": len(entries)}
+
+    def _tool_note_move(self, args: dict[str, Any]) -> dict[str, Any]:
+        path = args["path"]
+        new_category = (args.get("new_category") or "").strip() or "uncategorized"
+        row = storage.get_group_by_path(self._conn, path)
+        if row is None:
+            return {"error": f"note not found: {path}"}
+        new_path = storage.build_path(new_category, row.slug)
+        if new_path == row.path:
+            return {"status": "ok", "path": row.path, "old_path": row.path,
+                    "category": new_category, "group_id": row.id, "unchanged": True}
+        if storage.get_group_by_path(self._conn, new_path) is not None:
+            return {"error": f"conflict: {new_path} already exists — merge via note_rewrite or pick another category"}
+        storage.move_group(self._conn, row.id, new_category=new_category, new_path=new_path)
+        storage._fts_rebuild_for_group(self._conn, row.id)
+        return {"status": "ok", "path": new_path, "old_path": row.path,
+                "category": new_category, "group_id": row.id}
 
     def _tool_note_maintain(self, args: dict[str, Any]) -> dict[str, Any]:
         """Mechanical work only; NEVER clears dirty on its own."""

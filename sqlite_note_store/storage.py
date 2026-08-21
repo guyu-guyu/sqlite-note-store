@@ -307,6 +307,24 @@ def delete_group(conn: sqlite3.Connection, group_id: int) -> None:
     conn.execute("DELETE FROM groups WHERE id = ?", (group_id,))
 
 
+def move_group(
+    conn: sqlite3.Connection,
+    group_id: int,
+    *,
+    new_category: str,
+    new_path: str,
+) -> None:
+    """Relocate a group to a new category/path (slug unchanged).
+
+    Mechanical move only — does NOT touch dirty (content is unchanged)
+    and does NOT check conflicts; callers validate new_path first.
+    """
+    conn.execute(
+        "UPDATE groups SET category = ?, path = ?, updated = ? WHERE id = ?",
+        (new_category, new_path, _now(), group_id),
+    )
+
+
 def append_entry(
     conn: sqlite3.Connection,
     group_id: int,

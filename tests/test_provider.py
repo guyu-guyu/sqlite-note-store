@@ -235,3 +235,42 @@ def test_unknown_tool_returns_error_json(tmp_path):
     err = json.loads(result)
     assert "error" in err
     p.shutdown()
+
+
+def test_note_move_relocates_group(tmp_path):
+    p = _new_provider(tmp_path)
+    r = _call(p, "note_write", title="Flow", content="body",
+              category="game/br", entry_header="e1")
+    moved = _call(p, "note_move", path=r["path"], new_category="game/card")
+    assert moved["status"] == "ok"
+    assert moved["path"] == "game/card/Flow.md"  # slug 保留大小写,不转小写
+    assert moved["old_path"] == "game/br/Flow.md"
+
+    # Old path gone, new path readable with entries intact.
+    old = json.loads(p.handle_tool_call("note_read", {"path": "game/br/Flow.md"}))
+    assert "error" in old
+    doc = _call(p, "note_read_group", path="game/card/Flow.md")
+    assert doc["entries"][0]["header"] == "e1"
+
+    # FTS reflects the new path (group meta columns refreshed).
+    res = _call(p, "note_search", query="body")
+    assert any(h["path"] == "game/card/Flow.md" for h in res["results"])
+    p.shutdown()
+
+
+def test_note_move_conflict_returns_error(tmp_path):
+    p = _new_provider(tmp_path)
+    _call(p, "note_write", title="Flow", content="one", category="game/br")
+    _call(p, "note_write", title="Flow", content="two", category="game/card")
+    raw = p.handle_tool_call(
+        "note_move", {"path": "game/br/Flow.md", "new_category": "game/card"}
+    )
+    assert "error" in json.loads(raw)
+    p.shutdown()
+
+
+def test_note_move_missing_group_returns_error(tmp_path):
+    p = _new_provider(tmp_path)
+    raw = p.handle_tool_call("note_move", {"path": "nope/x.md", "new_category": "y"})
+    assert "error" in json.loads(raw)
+    p.shutdown()
