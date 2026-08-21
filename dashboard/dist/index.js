@@ -21,7 +21,7 @@
   var Button = SDK.components.Button;
   var Input = SDK.components.Input;
 
-  var API = "/api/plugins/notes";
+  var API = "/api/plugins/sqlite-note-store";
 
   // ── 小工具 ────────────────────────────────────────────────────────────
 
@@ -671,6 +671,6 @@
   // ── Register ──────────────────────────────────────────────────────────
 
   if (window.__HERMES_PLUGINS__ && typeof window.__HERMES_PLUGINS__.register === "function") {
-    window.__HERMES_PLUGINS__.register("notes", NotesPage);
+    window.__HERMES_PLUGINS__.register("sqlite-note-store", NotesPage);
   }
 })();
