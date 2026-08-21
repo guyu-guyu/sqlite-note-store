@@ -96,7 +96,7 @@ def export_to_directory(
         ]
         text = markdown_io.render_file(meta, parsed)
 
-        target = out_root / g.path
+        target = out_root / f"{g.path}.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
         groups_written += 1
@@ -119,9 +119,10 @@ def export_to_directory(
         # Cold-storage files intentionally omit YAML front matter — the
         # filename encodes the creation date and dirty/title are
         # meaningless in a time-queue archive. Matches reference plugin.
+        # The '.md' suffix is an export-boundary concern only.
         text = markdown_io.build_body_from_entries(parsed_cold)
         cold_dir.mkdir(parents=True, exist_ok=True)
-        (cold_dir / cb["filename"]).write_text(text, encoding="utf-8")
+        (cold_dir / f"{cb['filename']}.md").write_text(text, encoding="utf-8")
         cold_batches_written += 1
         cold_entries_written += len(cold_entries)
 
@@ -264,7 +265,7 @@ def _build_index_markdown(conn: sqlite3.Connection) -> str:
                 (cb["id"],),
             ).fetchone()[0]
             lines.append(
-                f"- [{cb['filename']}]({COLD_DIRNAME}/{cb['filename']}) — {count} entries"
+                f"- [{cb['filename']}]({COLD_DIRNAME}/{cb['filename']}.md) — {count} entries"
             )
         lines.append("")
 
@@ -340,14 +341,15 @@ def _import_active_group(
     if len(parts) < 2:
         # A .md sitting at the root with no category. Reference plugin
         # would have placed it under 'uncategorized'; we do the same on
-        # import for consistency.
+        # import for consistency. The '.md' suffix is stripped — paths
+        # in the DB carry no extension.
         category = "uncategorized"
         slug = rel_path.stem
-        canonical_rel = f"{category}/{slug}.md"
+        canonical_rel = f"{category}/{slug}"
     else:
         category = "/".join(parts[:-1])  # multi-level: all path segments
         slug = rel_path.stem
-        canonical_rel = "/".join([*parts[:-1], f"{slug}.md"])
+        canonical_rel = "/".join([*parts[:-1], slug])
 
     text = abs_path.read_text(encoding="utf-8")
     parsed = markdown_io.parse_file(text)
@@ -388,15 +390,17 @@ def _import_cold_batch(
     Cold files have no YAML front matter, so the parser just sees a
     sequence of `## header` blocks. We pull creation time from the
     filename when it looks like ISO date; falling back to file mtime.
+    The '.md' suffix is stripped — the DB stores the bare batch name.
     """
     text = abs_path.read_text(encoding="utf-8")
     entries = markdown_io.parse_entries(text)
     created = _cold_created_from_filename(filename) or _now_iso()
+    batch_name = filename[:-3] if filename.endswith(".md") else filename
 
-    # If a row with this filename already exists (re-import path), keep
+    # If a row with this batch name already exists (re-import path), keep
     # its id but wipe entries so we don't accumulate duplicates.
     existing = conn.execute(
-        "SELECT id FROM cold_batches WHERE filename = ?", (filename,)
+        "SELECT id FROM cold_batches WHERE filename = ?", (batch_name,)
     ).fetchone()
     if existing:
         batch_id = existing["id"]
@@ -404,7 +408,7 @@ def _import_cold_batch(
     else:
         cur = conn.execute(
             "INSERT INTO cold_batches(filename, created) VALUES (?, ?)",
-            (filename, created),
+            (batch_name, created),
         )
         batch_id = cur.lastrowid
 

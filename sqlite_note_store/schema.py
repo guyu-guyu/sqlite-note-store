@@ -58,7 +58,8 @@ _DDL_STATEMENTS = [
     # groups: one row per active group — the thematic container of
     # similar entries, exported as a single markdown file.
     #
-    #   path      — 'category/slug.md' — matches on-disk relative path, UNIQUE.
+    #   path      — 'category/slug' — logical group identifier, UNIQUE.
+    #                The '.md' suffix is appended at the export boundary.
     #   category  — first path segment ('uncategorized' when absent).
     #   slug      — filename minus '.md' (drives file naming on export).
     #   title     — YAML `title:` (falls back to slug on export if empty).

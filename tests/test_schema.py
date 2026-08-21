@@ -45,7 +45,7 @@ def test_connect_is_idempotent(tmp_path):
         conn2.execute(
             "INSERT INTO groups(path, category, slug, title, created, updated) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            ("cat/foo.md", "cat", "foo", "Foo", "2026-01-01T00:00:00+00:00",
+            ("cat/foo", "cat", "foo", "Foo", "2026-01-01T00:00:00+00:00",
              "2026-01-01T00:00:00+00:00"),
         )
         conn2.commit()
@@ -71,7 +71,7 @@ def test_foreign_keys_cascade_on_group_delete(tmp_path):
     try:
         conn.execute(
             "INSERT INTO groups(path, category, slug, title, created, updated) "
-            "VALUES ('cat/x.md', 'cat', 'x', 'X', '2026-01-01T00:00:00+00:00',"
+            "VALUES ('cat/x', 'cat', 'x', 'X', '2026-01-01T00:00:00+00:00',"
             " '2026-01-01T00:00:00+00:00')"
         )
         group_id = conn.execute("SELECT id FROM groups").fetchone()[0]

@@ -190,7 +190,7 @@ def get_index():
         "category": "uncategorized",
         "files": [
           {
-            "id": 1, "path": "uncategorized/foo.md", "title": "...",
+            "id": 1, "path": "uncategorized/foo", "title": "...",
             "dirty": false, "entry_count": 3,
             "entries": [
               {"id": 1, "header": "...", "dirty": false},
@@ -332,7 +332,7 @@ def create_entry(body: EntryCreate):
 
 @router.post("/files")
 def create_file(body: FileCreate):
-    """新建组。根据 title 自动生成 slug，组合为 category/slug.md 路径。
+    """新建组。根据 title 自动生成 slug，组合为 category/slug 路径（导出时拼 .md）。
     如果路径已存在，返回 409 冲突。"""
     conn = _conn()
     try:
@@ -343,7 +343,7 @@ def create_file(body: FileCreate):
         slug = re.sub(r'[^\w\u4e00-\u9fff\-]', '_', slug).strip("_") or "untitled"
 
         category = body.category.strip() or "uncategorized"
-        path = f"{category}/{slug}.md"
+        path = f"{category}/{slug}"
 
         existing = conn.execute("SELECT id FROM groups WHERE path = ?", (path,)).fetchone()
         if existing is not None:
@@ -402,7 +402,7 @@ def update_file(file_id: int, body: FileUpdate):
             new_category = "uncategorized"
 
         new_slug = _make_slug(new_title)
-        new_path = f"{new_category}/{new_slug}.md"
+        new_path = f"{new_category}/{new_slug}"
 
         # path 冲突检测（排除自身）
         clash = conn.execute(
@@ -474,7 +474,7 @@ def rename_category(body: CategoryUpdate):
         now = _now_iso()
         renamed = 0
         for r in rows:
-            new_path = f"{new_name}/{r['slug']}.md"
+            new_path = f"{new_name}/{r['slug']}"
             clash = conn.execute(
                 "SELECT id FROM groups WHERE path = ? AND id != ?", (new_path, r["id"])
             ).fetchone()

@@ -4,7 +4,7 @@ Hermes Agent 的 SQLite 后端记忆库插件。权威存储放在单个 SQLite 
 
 > **前置阅读：** `DESIGN_PHILOSOPHY.md` — 讲这个插件为什么这样设计。本 README 只讲"怎么装、怎么用、内部长什么样"。
 
-> **术语约定：** 存储层概念是**组（group）**——一个主题容器，把相似条目归拢在一起（`groups` 表一行），导出时才对应一个 `category/slug.md` 文件。冷存储按创建时间分成**批次（batch）**（`cold_batches` 表一行），不是主题组。下文除明确指磁盘产物（md 文件、INDEX.md）外，"文件"均指组。
+> **术语约定：** 存储层概念是**组（group）**——一个主题容器，把相似条目归拢在一起（`groups` 表一行），导出时才对应一个 `category/slug.md` 文件。冷存储按创建时间分成**批次（batch）**（`cold_batches` 表一行），不是主题组。下文除明确指磁盘产物（md 文件、INDEX.md）外，“文件”均指组。**DB 中的 path 不带 `.md` 后缀**——后缀只在导出边界拼上。
 
 ## 特性
 
@@ -103,13 +103,13 @@ Fall back to `note_search(query)` when the index doesn't match.
 
 ## game
 - br
-  - [卡牌BR战斗流程](game/br/br-flow.md) — 8 entries
+  - [卡牌BR战斗流程](game/br/br-flow) — 8 entries
   - [局外系统](game/br/meta.md) — 12 entries *(dirty)*
 - fps
   - [武器平衡](game/fps/weapon.md) — 3 entries
 
 ## cold-storage
-- [2026-07-15.md](cold-storage/2026-07-15.md) — 23 entries
+- [2026-07-15](cold-storage/2026-07-15.md) — 23 entries
 ```
 
 顶栏统计给出 `Groups / Entries / Cold / Dirty` 四个数字，加上生成时间戳。之后按分类分组列出所有活跃组，每个组标注条目数；dirty 组带 `*(dirty)*` 标记。冷存储只列文件名 + 条目数。

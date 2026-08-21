@@ -13,13 +13,13 @@ def test_upsert_group_and_read_back(tmp_path):
     conn = _conn(tmp_path)
     gid = storage.upsert_group(
         conn,
-        path="cat/a.md", category="cat", slug="a", title="A",
+        path="cat/a", category="cat", slug="a", title="A",
         tags=["x", "y"], dirty=True,
         created="2026-01-01T00:00:00+00:00",
         updated="2026-01-02T00:00:00+00:00",
     )
     conn.commit()
-    fetched = storage.get_group_by_path(conn, "cat/a.md")
+    fetched = storage.get_group_by_path(conn, "cat/a")
     assert fetched is not None
     assert fetched.id == gid
     assert fetched.title == "A"
@@ -169,9 +169,9 @@ def test_move_entry_to_cold_removes_from_active(tmp_path):
 def test_cold_batch_rollover_and_limit_enforcement(tmp_path):
     conn = _conn(tmp_path)
     # Insert three cold batches with distinct 'created' timestamps.
-    conn.execute("INSERT INTO cold_batches(filename, created) VALUES ('a.md', '2026-01-01T00:00:00+00:00')")
-    conn.execute("INSERT INTO cold_batches(filename, created) VALUES ('b.md', '2026-01-02T00:00:00+00:00')")
-    conn.execute("INSERT INTO cold_batches(filename, created) VALUES ('c.md', '2026-01-03T00:00:00+00:00')")
+    conn.execute("INSERT INTO cold_batches(filename, created) VALUES ('a', '2026-01-01T00:00:00+00:00')")
+    conn.execute("INSERT INTO cold_batches(filename, created) VALUES ('b', '2026-01-02T00:00:00+00:00')")
+    conn.execute("INSERT INTO cold_batches(filename, created) VALUES ('c', '2026-01-03T00:00:00+00:00')")
     conn.commit()
 
     deleted = storage.enforce_cold_batch_limit(conn, max_batches=2)
@@ -180,6 +180,6 @@ def test_cold_batch_rollover_and_limit_enforcement(tmp_path):
 
     remaining = [r["filename"] for r in storage.list_cold_batches(conn)]
     # Oldest ('a.md') was pruned.
-    assert "a.md" not in remaining
-    assert set(remaining) == {"b.md", "c.md"}
+    assert "a" not in remaining
+    assert set(remaining) == {"b", "c"}
     conn.close()

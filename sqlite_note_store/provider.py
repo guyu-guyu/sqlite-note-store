@@ -310,7 +310,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "relative path like 'category/slug.md'",
+                            "description": "relative path like 'category/slug'",
                         },
                     },
                     "required": ["path"],

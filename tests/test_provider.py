@@ -243,18 +243,18 @@ def test_note_move_relocates_group(tmp_path):
               category="game/br", entry_header="e1")
     moved = _call(p, "note_move", path=r["path"], new_category="game/card")
     assert moved["status"] == "ok"
-    assert moved["path"] == "game/card/Flow.md"  # slug 保留大小写,不转小写
-    assert moved["old_path"] == "game/br/Flow.md"
+    assert moved["path"] == "game/card/Flow"  # slug 保留大小写,不转小写
+    assert moved["old_path"] == "game/br/Flow"
 
     # Old path gone, new path readable with entries intact.
-    old = json.loads(p.handle_tool_call("note_read", {"path": "game/br/Flow.md"}))
+    old = json.loads(p.handle_tool_call("note_read", {"path": "game/br/Flow"}))
     assert "error" in old
-    doc = _call(p, "note_read_group", path="game/card/Flow.md")
+    doc = _call(p, "note_read_group", path="game/card/Flow")
     assert doc["entries"][0]["header"] == "e1"
 
     # FTS reflects the new path (group meta columns refreshed).
     res = _call(p, "note_search", query="body")
-    assert any(h["path"] == "game/card/Flow.md" for h in res["results"])
+    assert any(h["path"] == "game/card/Flow" for h in res["results"])
     p.shutdown()
 
 
@@ -271,7 +271,7 @@ def test_note_move_conflict_returns_error(tmp_path):
 
 def test_note_move_missing_group_returns_error(tmp_path):
     p = _new_provider(tmp_path)
-    raw = p.handle_tool_call("note_move", {"path": "nope/x.md", "new_category": "y"})
+    raw = p.handle_tool_call("note_move", {"path": "nope/x", "new_category": "y"})
     assert "error" in json.loads(raw)
     p.shutdown()
 
@@ -283,7 +283,7 @@ def test_note_rename_category_renames_groups(tmp_path):
     res = _call(p, "note_rename_category", old_category="game/br", new_category="game/card")
     assert res["status"] == "ok"
     assert res["renamed"] == 2
-    doc = _call(p, "note_read_group", path="game/card/A.md")
+    doc = _call(p, "note_read_group", path="game/card/A")
     assert doc["title"] == "A"
     p.shutdown()
 
@@ -297,7 +297,7 @@ def test_note_rename_category_conflict_aborts_whole(tmp_path):
     )
     assert "error" in json.loads(raw)
     # Nothing partially applied: old path still readable.
-    _call(p, "note_read_group", path="game/br/A.md")
+    _call(p, "note_read_group", path="game/br/A")
     p.shutdown()
 
 
@@ -340,7 +340,7 @@ def test_maintain_detects_overpopulated_intermediate_node(tmp_path):
     assert set(over[0]["subcategories"]) == {"game/br"}
     # Out-of-cap direct groups (3 - 2 = 1, oldest first) got force-dirtied.
     dirty = _call(p, "note_maintain")["dirty_groups"]
-    assert "game/A.md" in dirty  # slug 保留大小写
+    assert "game/A" in dirty  # slug 保留大小写
     p.shutdown()
 
 
@@ -348,6 +348,6 @@ def test_note_move_normalizes_trailing_slash(tmp_path):
     p = _new_provider(tmp_path)
     r = _call(p, "note_write", title="Flow", content="body", category="game/br")
     moved = _call(p, "note_move", path=r["path"], new_category="game/card/")
-    assert moved["path"] == "game/card/Flow.md"  # no double slash
+    assert moved["path"] == "game/card/Flow"  # no double slash
     assert moved["category"] == "game/card"
     p.shutdown()

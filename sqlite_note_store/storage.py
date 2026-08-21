@@ -130,8 +130,11 @@ def slugify(title: str, fallback: str = "note") -> str:
 
 
 def build_path(category: str, slug: str) -> str:
-    """Assemble the canonical 'category/slug.md' path used across the store."""
-    return f"{category}/{slug}.md"
+    """Assemble the canonical 'category/slug' path used across the store.
+
+    No extension — '.md' is appended at the export boundary only.
+    """
+    return f"{category}/{slug}"
 
 
 # ---------------------------------------------------------------------------
@@ -460,12 +463,12 @@ def get_or_create_cold_batch_for_today(conn: sqlite3.Connection) -> int:
 def _create_cold_batch(conn: sqlite3.Connection, date_str: str) -> int:
     """Insert a new cold batch, disambiguating collisions with '-NN' suffix."""
     base = date_str
-    filename = f"{base}.md"
+    filename = f"{base}"
     suffix = 1
     while conn.execute(
         "SELECT 1 FROM cold_batches WHERE filename = ?", (filename,)
     ).fetchone():
-        filename = f"{base}-{suffix:02d}.md"
+        filename = f"{base}-{suffix:02d}"
         suffix += 1
     cur = conn.execute(
         "INSERT INTO cold_batches(filename, created) VALUES (?, ?)",

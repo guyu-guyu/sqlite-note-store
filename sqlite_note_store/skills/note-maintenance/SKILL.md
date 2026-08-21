@@ -18,14 +18,14 @@ platforms: [linux, macos, windows]
 
 | 表 | 作用 | 关键字段 |
 |---|---|---|
-| `groups` | 条目容器（主题归拢相似条目） | `path`（`category/slug.md`，category 可多段如 `game/br`）、`dirty`、`category`、`title` |
+| `groups` | 条目容器（主题归拢相似条目） | `path`（`category/slug`，category 可多段如 `game/br`）、`dirty`、`category`、`title` |
 | `entries` | 记忆原子单位，属于一个 group | `group_id`, `header`, `content`, `last_used`, `comments`(JSON) |
 | `entries_fts` | FTS5 搜索索引（存储层自动同步，无需维护） | — |
 | `cold_batches` | 冷存储批次（按创建时间命名的时间队列） | `id`, `filename`, `created` |
 | `cold_entries` | 被清退到冷存储的条目 | `cold_batch_id`, `header`, `content`, `original_category` |
 
 **关键概念**：
-- **`path`** 是 `category/slug.md` 格式的字符串标识符（如 `game/br/flow.md`），即组在分类树中的位置（`groups` 表的一列）
+- **`path`** 是 `category/slug` 格式的字符串标识符（如 `game/br/flow`），即组在分类树中的位置（`groups` 表的一列）
 - **`dirty`** 是组级标记；**`comments`** 是 ephemeral TODO（JSON 数组）
 - **INDEX** 不落盘——每轮由 `system_prompt_block()` 实时 SQL 构建注入 system prompt；**FTS5** 由存储层在每次写入时自动同步，`note_rewrite` 后无需手动重建
 
@@ -108,7 +108,7 @@ platforms: [linux, macos, windows]
 ### 第四步：调用 `note_rewrite` 保存
 
 ```
-note_rewrite(path="game/br/flow.md", entries=[{header, content, last_used?}, ...])
+note_rewrite(path="game/br/flow", entries=[{header, content, last_used?}, ...])
 ```
 
 - `entries` 是**完整最终列表**——不是 diff、不是追加。传什么存什么（事务内先 DELETE 旧 entries 再 INSERT 新的）

@@ -24,7 +24,7 @@ def _seed_conn(tmp_path):
 
     # Group 1: category with tags and comments.
     gid1 = storage.upsert_group(
-        conn, path="game/br.md", category="game", slug="br", title="卡牌BR",
+        conn, path="game/br", category="game", slug="br", title="卡牌BR",
         tags=["game", "br"], dirty=True,
         created="2026-08-01T00:00:00+00:00",
         updated="2026-08-20T00:00:00+00:00",
@@ -47,7 +47,7 @@ def _seed_conn(tmp_path):
 
     # Group 2: uncategorized single-entry group, no tags.
     gid2 = storage.upsert_group(
-        conn, path="uncategorized/notes.md", category="uncategorized",
+        conn, path="uncategorized/notes", category="uncategorized",
         slug="notes", title="Notes", tags=[], dirty=False,
         created="2026-08-01T00:00:00+00:00",
         updated="2026-08-10T00:00:00+00:00",
@@ -57,7 +57,7 @@ def _seed_conn(tmp_path):
     # Cold storage batch.
     conn.execute(
         "INSERT INTO cold_batches(filename, created) VALUES "
-        "('2026-07-01.md', '2026-07-01T00:00:00+00:00')"
+        "('2026-07-01', '2026-07-01T00:00:00+00:00')"
     )
     batch_id = conn.execute("SELECT id FROM cold_batches").fetchone()["id"]
     conn.execute(
@@ -117,9 +117,9 @@ def test_import_roundtrip_is_idempotent(tmp_path):
     # DB state matches: group rows.
     groups = storage.list_groups(dst_conn)
     paths = {g.path: g for g in groups}
-    assert set(paths) == {"game/br.md", "uncategorized/notes.md"}
+    assert set(paths) == {"game/br", "uncategorized/notes"}
 
-    br = paths["game/br.md"]
+    br = paths["game/br"]
     assert br.title == "卡牌BR"
     assert br.tags == ["game", "br"]
     assert br.dirty is True
@@ -134,7 +134,7 @@ def test_import_roundtrip_is_idempotent(tmp_path):
     # Cold-storage fidelity.
     cold_batches = storage.list_cold_batches(dst_conn)
     assert len(cold_batches) == 1
-    assert cold_batches[0]["filename"] == "2026-07-01.md"
+    assert cold_batches[0]["filename"] == "2026-07-01"
     cold_entries = storage.list_cold_entries(dst_conn, cold_batches[0]["id"])
     assert cold_entries[0]["header"] == "old header"
     assert cold_entries[0]["content"] == "old body"
@@ -165,7 +165,7 @@ def test_import_creates_uncategorized_for_root_md(tmp_path):
     conn = schema.connect(tmp_path / "db")
     stats = export.import_from_directory(conn, in_root)
     assert stats["groups"] == 1
-    row = storage.get_group_by_path(conn, "uncategorized/loose.md")
+    row = storage.get_group_by_path(conn, "uncategorized/loose")
     assert row is not None
     assert row.title == "Loose"
     conn.close()
@@ -182,7 +182,7 @@ def test_export_clean_removes_stale_files(tmp_path):
     # Force the DB to include 'old' so clean sweeps it.
     conn.execute(
         "INSERT INTO groups(path, category, slug, title, tags, dirty, created, updated) "
-        "VALUES ('old/stale.md', 'old', 'stale', 'Stale', '[]', 0, "
+        "VALUES ('old/stale', 'old', 'stale', 'Stale', '[]', 0, "
         "'2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00')"
     )
     conn.commit()
@@ -190,7 +190,7 @@ def test_export_clean_removes_stale_files(tmp_path):
     export.export_to_directory(conn, out, clean=True)
     conn.close()
 
-    # 'old/stale.md' rewritten from the DB (empty body since we didn't
+    # 'old/stale' rewritten from the DB (empty body since we didn't
     # add entries), but no stale sibling files remain.
     assert (out / "old" / "stale.md").exists()
     assert not (out / "old" / "orphan.md").exists()
@@ -234,7 +234,7 @@ def test_import_from_reference_plugin_shape(tmp_path):
     assert stats["entries"] == 2
     assert stats["cold_entries"] == 1
 
-    row = storage.get_group_by_path(conn, "productivity/workflows.md")
+    row = storage.get_group_by_path(conn, "productivity/workflows")
     assert row.tags == ["work", "ops"]
     entries = storage.list_entries(conn, row.id)
     assert entries[0].header == "daily-standup"
@@ -258,7 +258,7 @@ def test_import_multilevel_category_preserves_path(tmp_path):
     conn = schema.connect(tmp_path / "db")
     stats = export.import_from_directory(conn, in_root)
     assert stats["groups"] == 1
-    row = storage.get_group_by_path(conn, "game/br/flow.md")
+    row = storage.get_group_by_path(conn, "game/br/flow")
     assert row is not None
     assert row.category == "game/br"
     conn.close()
@@ -268,18 +268,18 @@ def test_index_renders_category_tree(tmp_path):
     """INDEX renders a nested category tree with indentation."""
     conn = schema.connect(tmp_path / "db")
     storage.upsert_group(
-        conn, path="game/br/flow.md", category="game/br", slug="flow",
+        conn, path="game/br/flow", category="game/br", slug="flow",
         title="Flow", tags=[], dirty=True,
         created="2026-01-01T00:00:00+00:00", updated="2026-01-01T00:00:00+00:00",
     )
-    storage.append_entry(conn, storage.get_group_by_path(conn, "game/br/flow.md").id,
+    storage.append_entry(conn, storage.get_group_by_path(conn, "game/br/flow").id,
                          header="h", content="c")
     storage.upsert_group(
-        conn, path="game/fps/weapon.md", category="game/fps", slug="weapon",
+        conn, path="game/fps/weapon", category="game/fps", slug="weapon",
         title="Weapon", tags=[], dirty=False,
         created="2026-01-02T00:00:00+00:00", updated="2026-01-02T00:00:00+00:00",
     )
-    storage.append_entry(conn, storage.get_group_by_path(conn, "game/fps/weapon.md").id,
+    storage.append_entry(conn, storage.get_group_by_path(conn, "game/fps/weapon").id,
                          header="h", content="c")
     conn.commit()
 
@@ -288,6 +288,6 @@ def test_index_renders_category_tree(tmp_path):
 
     assert "## game" in text
     assert "- br" in text
-    assert "  - [Flow](game/br/flow.md) — 1 entries *(dirty)*" in text
+    assert "  - [Flow](game/br/flow) — 1 entries *(dirty)*" in text
     assert "- fps" in text
-    assert "  - [Weapon](game/fps/weapon.md) — 1 entries" in text
+    assert "  - [Weapon](game/fps/weapon) — 1 entries" in text

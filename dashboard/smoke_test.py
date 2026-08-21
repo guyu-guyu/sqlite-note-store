@@ -19,7 +19,7 @@ conn = connect(Path(tmpdir))
 conn.execute(
     "INSERT INTO groups (path, category, slug, title, tags, dirty, created, updated) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    ("uncategorized/test.md", "uncategorized", "test", "测试组",
+    ("uncategorized/test", "uncategorized", "test", "测试组",
      '["tag1"]', 0, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
 )
 group_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -43,7 +43,7 @@ for eid, hdr, ctnt in [
     conn.execute(
         "INSERT INTO entries_fts(rowid, header, content, category, group_title, group_path) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (eid, hdr, ctnt, "uncategorized", "测试组", "uncategorized/test.md"),
+        (eid, hdr, ctnt, "uncategorized", "测试组", "uncategorized/test"),
     )
 conn.commit()
 conn.close()
