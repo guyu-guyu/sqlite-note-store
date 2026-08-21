@@ -301,7 +301,7 @@ def _import_active_group(
         slug = rel_path.stem
         canonical_rel = f"{category}/{slug}.md"
     else:
-        category = parts[0]
+        category = "/".join(parts[:-1])  # multi-level: all path segments
         slug = rel_path.stem
         canonical_rel = "/".join([*parts[:-1], f"{slug}.md"])
 

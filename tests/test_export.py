@@ -242,3 +242,23 @@ def test_import_from_reference_plugin_shape(tmp_path):
     assert entries[1].header == "code-review"
     assert entries[1].last_used is None
     conn.close()
+
+
+def test_import_multilevel_category_preserves_path(tmp_path):
+    """A nested dir tree imports with the full prefix as category."""
+    in_root = tmp_path / "in"
+    (in_root / "game" / "br").mkdir(parents=True)
+    (in_root / "game" / "br" / "flow.md").write_text(
+        "---\ntitle: Flow\ndirty: false\n"
+        "created: 2026-01-01T00:00:00+00:00\nupdated: 2026-01-01T00:00:00+00:00\n---\n\n"
+        "## a\nA\n",
+        encoding="utf-8",
+    )
+
+    conn = schema.connect(tmp_path / "db")
+    stats = export.import_from_directory(conn, in_root)
+    assert stats["groups"] == 1
+    row = storage.get_group_by_path(conn, "game/br/flow.md")
+    assert row is not None
+    assert row.category == "game/br"
+    conn.close()
