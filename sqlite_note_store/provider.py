@@ -56,6 +56,7 @@ DEFAULT_COLD_EVICT_DAYS = 90
 DEFAULT_MAX_COLD_BATCHES = 50
 DEFAULT_MAX_ACTIVE_GROUP_SIZE_BYTES = 50 * 1024  # 50 KB soft cap
 DEFAULT_MAX_GROUPS_PER_CATEGORY = 50
+DEFAULT_MAX_CATEGORY_DEPTH = 3  # detection threshold only — never enforced
 DEFAULT_PREFETCH_CHAR_LIMIT = 2000
 DEFAULT_TOOL_SEARCH_LIMIT = 5
 
@@ -91,6 +92,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         self._max_cold_batches = DEFAULT_MAX_COLD_BATCHES
         self._max_active_group_size = DEFAULT_MAX_ACTIVE_GROUP_SIZE_BYTES
         self._max_groups_per_category = DEFAULT_MAX_GROUPS_PER_CATEGORY
+        self._max_category_depth = DEFAULT_MAX_CATEGORY_DEPTH
         self._prefetch_char_limit = DEFAULT_PREFETCH_CHAR_LIMIT
         self._pending_prefetch_query: str | None = None
         self._cached_prefetch_result: str = ""
@@ -782,8 +784,8 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             if row:
                 storage.mark_dirty(self._conn, row.id, True)
         for entry in overpop:
-            for p in entry["groups"][
-                : max(0, entry["group_count"] - self._max_groups_per_category)
+            for p in entry["direct_groups"][
+                : max(0, len(entry["direct_groups"]) - self._max_groups_per_category)
             ]:
                 row = storage.get_group_by_path(self._conn, p)
                 if row:
@@ -799,6 +801,8 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             "cold_batches_pruned": cold_batches_pruned,
             "oversized_groups": oversized,
             "overpopulated_categories": overpop,
+            "deep_categories": self._detect_deep_categories(),
+            "hierarchy_summary": self._hierarchy_summary(),
         }
 
     # ---- maintenance detectors -------------------------------------------
@@ -830,21 +834,59 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 })
         return oversized
 
-    def _detect_overpopulated_categories(self) -> list[dict[str, Any]]:
-        """Categories with more groups than allowed."""
-        out: list[dict[str, Any]] = []
-        by_cat: dict[str, list[storage.GroupRow]] = {}
+    def _detect_deep_categories(self) -> list[str]:
+        """Category paths deeper than the suggested max depth.
+
+        Report-only — never marks dirty or blocks writes; the LLM
+        decides how to flatten (see maintenance skill).
+        """
+        depths: dict[str, int] = {}
         for g in storage.list_groups(self._conn):
-            by_cat.setdefault(g.category, []).append(g)
-        for cat, groups in by_cat.items():
-            if len(groups) > self._max_groups_per_category:
-                # Sort oldest-first by `created` so the oldest slice gets
-                # force-dirty'd — matches the reference plugin's rule.
-                groups_sorted = sorted(groups, key=lambda r: r.created)
+            depth = len([s for s in (g.category or "").split("/") if s])
+            if depth > self._max_category_depth:
+                depths[g.category] = depth
+        return sorted(depths)
+
+    def _hierarchy_summary(self) -> dict[str, int]:
+        """Per-level node counts so the LLM can see the tree shape."""
+        tree = export_mod._category_tree(storage.list_groups(self._conn))
+
+        def walk(nodes: list[dict[str, Any]]) -> list[int]:
+            depths: list[int] = []
+            for node in nodes:
+                depths.append(
+                    len([s for s in (node["path"] or "").split("/") if s])
+                )
+                depths.extend(walk(node["children"]))
+            return depths
+
+        out: dict[str, int] = {}
+        for depth in walk(tree):
+            key = f"depth{depth}" if depth <= 3 else "depth4+"
+            out[key] = out.get(key, 0) + 1
+        return dict(sorted(out.items()))
+
+    def _detect_overpopulated_categories(self) -> list[dict[str, Any]]:
+        """Categories whose node (direct subcategories + direct groups)
+        exceeds the cap.  Every tree node counts, not just leaves."""
+        groups = storage.list_groups(self._conn)
+        tree = export_mod._category_tree(groups)
+
+        def walk(nodes: list[dict[str, Any]]):
+            for node in nodes:
+                yield node
+                yield from walk(node["children"])
+
+        out: list[dict[str, Any]] = []
+        for node in walk(tree):
+            child_count = len(node["children"]) + len(node["groups"])
+            if child_count > self._max_groups_per_category:
+                direct_groups = sorted(node["groups"], key=lambda r: r.created)
                 out.append({
-                    "category": cat,
-                    "group_count": len(groups),
-                    "groups": [g.path for g in groups_sorted],
+                    "category": node["path"],
+                    "child_count": child_count,
+                    "subcategories": [c["path"] for c in node["children"]],
+                    "direct_groups": [g.path for g in direct_groups],
                 })
         return out
 

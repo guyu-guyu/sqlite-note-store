@@ -308,3 +308,37 @@ def test_note_rename_category_empty_or_missing_errors(tmp_path):
     raw2 = p.handle_tool_call("note_rename_category", {"old_category": "", "new_category": "x"})
     assert "error" in json.loads(raw2)
     p.shutdown()
+
+
+def test_maintain_reports_hierarchy_shape(tmp_path):
+    p = _new_provider(tmp_path)
+    _call(p, "note_write", title="A", content="a", category="game/br")
+    _call(p, "note_write", title="B", content="b", category="game/br/x/y/z")
+    res = _call(p, "note_maintain")
+    # game(d1) / game.br(d2) / game.br.x(d3) / ...y(d4+) / ...z(d4+)
+    assert res["hierarchy_summary"]["depth1"] == 1
+    assert res["hierarchy_summary"]["depth2"] == 1
+    assert res["hierarchy_summary"]["depth3"] == 1
+    assert res["hierarchy_summary"]["depth4+"] == 2
+    assert "game/br/x/y/z" in res["deep_categories"]
+    assert "game/br" not in res["deep_categories"]
+    p.shutdown()
+
+
+def test_maintain_detects_overpopulated_intermediate_node(tmp_path):
+    p = _new_provider(tmp_path)
+    p._max_groups_per_category = 2
+    _call(p, "note_write", title="A", content="a", category="game")
+    _call(p, "note_write", title="B", content="b", category="game")
+    _call(p, "note_write", title="C", content="c", category="game")
+    _call(p, "note_write", title="D", content="d", category="game/br")
+    res = _call(p, "note_maintain")
+    # Node 'game' holds 3 direct groups + 1 subcategory = 4 > 2.
+    over = [o for o in res["overpopulated_categories"] if o["category"] == "game"]
+    assert len(over) == 1
+    assert over[0]["child_count"] == 4
+    assert set(over[0]["subcategories"]) == {"game/br"}
+    # Out-of-cap direct groups (3 - 2 = 1, oldest first) got force-dirtied.
+    dirty = _call(p, "note_maintain")["dirty_groups"]
+    assert "game/A.md" in dirty  # slug 保留大小写
+    p.shutdown()
