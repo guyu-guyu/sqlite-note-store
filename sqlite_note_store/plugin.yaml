@@ -3,6 +3,3 @@ version: 0.1.0
 description: "SQLite-backed note repository — tool-compatible with markdown-note-store, entry-level writes with organic Markdown-shape export."
 pip_dependencies: []
 requires_env: []
-hooks:
-  - on_turn_start
-  - on_session_end

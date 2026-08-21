@@ -21,20 +21,22 @@ Hermes Agent 的 SQLite 后端记忆库插件。权威存储放在单个 SQLite 
 ### 方式一：本地目录（开发/调试）
 
 ```bash
-# 1. 把插件目录链接到 Hermes plugins 目录
-mkdir -p ~/.hermes/plugins/sqlite-note-store
-ln -sf /path/to/sqlite-note-store-plugin/sqlite_note_store/* ~/.hermes/plugins/sqlite-note-store/
-ln -sf /path/to/sqlite-note-store-plugin/dashboard ~/.hermes/plugins/sqlite-note-store/dashboard
+# 1. 把插件链接到 Hermes 的 memory provider 目录（$HERMES_HOME 默认 ~/.hermes）
+mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store"
+ln -sf /path/to/sqlite-note-store-plugin/sqlite_note_store/* "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store/"
+ln -sf /path/to/sqlite-note-store-plugin/dashboard "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store/dashboard"
+ln -sf /path/to/sqlite-note-store-plugin/README.md "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store/README.md"
 
-# 2. 在 config.yaml 中启用
+# 2. 在 config.yaml 中指定 memory provider（这是激活的唯一开关）
 # memory:
 #   provider: sqlite-note-store
-# plugins:
-#   enabled:
-#     - sqlite-note-store
 
 # 3. 重启会话
 ```
+
+> **激活机制**：memory provider 只由 `memory.provider` 配置键激活，**不需要**（也不应该）出现在 `plugins.enabled` 列表里——Hermes 会把含 memory provider 注册的插件目录标记为 exclusive，交给专门的 memory 发现系统处理。
+>
+> **验证**：在 hermes-agent 仓库根目录运行 `python -c "from plugins.memory import discover_memory_providers; print([p[0] for p in discover_memory_providers()])"`，应包含 `sqlite-note-store`。若加载失败，启动日志会包含 `Failed to load memory provider` 或 `Memory provider ... initialize failed`（加载失败只是降级跳过，不会阻塞 Hermes 启动，所以**没报错 ≠ 已加载**，务必查配置与日志）。
 
 ### 方式二：pip 安装（分发）
 
