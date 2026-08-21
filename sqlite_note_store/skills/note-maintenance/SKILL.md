@@ -6,7 +6,7 @@ platforms: [linux, macos, windows]
 
 # SQLite 记忆库维护 Skill
 
-**术语**:存储层概念是**组(group)**——一个主题容器,导出时才对应一个 `category/slug.md` 文件。冷存储按创建时间分成**批次(batch)**,不是主题组。
+**术语**:存储层概念是**组(group)**——一个主题容器，把相似条目归拢在一起。冷存储按创建时间分成**批次(batch)**，不是主题组。
 
 ## 触发条件
 
@@ -18,14 +18,14 @@ platforms: [linux, macos, windows]
 
 | 表 | 作用 | 关键字段 |
 |---|---|---|
-| `groups` | 条目容器（主题归拢，导出为一个 .md 文件） | `path`（`category/slug.md`，category 可多段如 `game/br`）、`dirty`、`category`、`title` |
+| `groups` | 条目容器（主题归拢相似条目） | `path`（`category/slug.md`，category 可多段如 `game/br`）、`dirty`、`category`、`title` |
 | `entries` | 记忆原子单位，属于一个 group | `group_id`, `header`, `content`, `last_used`, `comments`(JSON) |
 | `entries_fts` | FTS5 搜索索引（存储层自动同步，无需维护） | — |
 | `cold_batches` | 冷存储批次（按创建时间命名的时间队列） | `id`, `filename`, `created` |
 | `cold_entries` | 被清退到冷存储的条目 | `cold_batch_id`, `header`, `content`, `original_category` |
 
 **关键概念**：
-- **`path`** 是 `category/slug.md` 字符串标识符（如 `game/br/flow.md`），不是磁盘路径——它是 `groups` 表的一列
+- **`path`** 是 `category/slug.md` 格式的字符串标识符（如 `game/br/flow.md`），即组在分类树中的位置（`groups` 表的一列）
 - **`dirty`** 是组级标记；**`comments`** 是 ephemeral TODO（JSON 数组）
 - **INDEX** 不落盘——每轮由 `system_prompt_block()` 实时 SQL 构建注入 system prompt；**FTS5** 由存储层在每次写入时自动同步，`note_rewrite` 后无需手动重建
 
