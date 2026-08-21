@@ -188,7 +188,7 @@ python -m sqlite_note_store export /tmp/view --no-index  # 跳过 INDEX.md
 - 冷批次超上限（默认 50 个）删最老
 - 检测超大组 → force dirty
 - 检测超限分类 → force dirty
-- 返回 `{dirty_groups, cold_moved, cold_batches_pruned, oversized_groups, overpopulated_categories}`
+- 返回 `{dirty_groups, cold_moved, cold_batches_pruned, oversized_groups, overpopulated_categories, deep_categories, hierarchy_summary}`
 
 **`note_maintain` 从不清 dirty**，这是最关键的一条契约。
 

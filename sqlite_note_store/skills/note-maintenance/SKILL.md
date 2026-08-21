@@ -131,7 +131,7 @@ platforms: [linux, macos, windows]
 - **层级维护动作**（响应式，仅在检测报告提示时做，不主动重构）：
   - 上提:`note_move(path, "父分类")` — 组提升一层
   - 下移:`note_move(path, "父/新子分类")` — 组归入更细主题
-  - 合并分类:把 B 分类下所有组逐个 `note_move` 到 A，空分类随最后一个组移走自然消失
+  - 合并分类:把 B 分类下所有组逐个 `note_move` 到 A，空分类（不再有直接组、也没有子分类）随最后一个组移走自然消失
   - 改名:`note_rename_category("旧路径", "新路径")` — 精确匹配，只改直接挂在该分类下的组，子分类不受影响；改整个子树请用 `note_move` 逐个搬
   - 冲突时机械层会报错：目标 path 已存在 → 先 `note_rewrite` 合并或换分类
 
@@ -153,7 +153,7 @@ platforms: [linux, macos, windows]
 
 超限的组已经被自动标脏，会同时出现在 `dirty_groups` 里。
 
-如果 `dirty_groups` / `oversized_groups` / `overpopulated_categories` 都为空 → 已完成，向用户报告即可。
+如果 `dirty_groups` / `oversized_groups` / `overpopulated_categories` / `deep_categories` 都为空（`hierarchy_summary` 无 `depth4+`）→ 已完成，向用户报告即可。
 
 ### 第二步：读每个脏组
 
