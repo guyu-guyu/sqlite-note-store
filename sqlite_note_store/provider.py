@@ -14,6 +14,8 @@ Tool surface (identical names, identical response shapes):
     note_comment  — attach an ephemeral TODO to an entry, marks dirty.
     note_maintain — mechanical work (cold-evict, index) + return dirty list.
     note_rewrite  — sole dirty-clearing entry point.
+    note_move     — mechanically relocate a group to another category (hierarchy maintenance).
+    note_rename_category — rename a category path (exact match), updating its groups' prefixes.
 
 Design decisions honored (see hermes-memory-provider skill):
     - Python detects, LLM decides, note_rewrite persists.
@@ -440,6 +442,24 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                     "required": ["path", "new_category"],
                 },
             },
+            {
+                "name": "note_rename_category",
+                "description": (
+                    "Rename a category path (exact match). All groups "
+                    "directly in that category get the new prefix; "
+                    "subcategories are NOT affected. Use for fixing "
+                    "category names; use note_move to relocate whole "
+                    "sub-trees. Errors if any target path already exists."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "old_category": {"type": "string"},
+                        "new_category": {"type": "string"},
+                    },
+                    "required": ["old_category", "new_category"],
+                },
+            },
         ]
 
     # -- tool dispatch ------------------------------------------------------
@@ -708,6 +728,30 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         storage._fts_rebuild_for_group(self._conn, row.id)
         return {"status": "ok", "path": new_path, "old_path": row.path,
                 "category": new_category, "group_id": row.id}
+
+    def _tool_note_rename_category(self, args: dict[str, Any]) -> dict[str, Any]:
+        old_category = (args.get("old_category") or "").strip()
+        new_category = (args.get("new_category") or "").strip()
+        if not old_category or not new_category:
+            return {"error": "old_category and new_category are required"}
+        if old_category == new_category:
+            return {"status": "ok", "renamed": 0,
+                    "old_category": old_category, "new_category": new_category}
+        groups = storage.list_groups(self._conn, category=old_category)
+        if not groups:
+            return {"error": f"category not found or empty: {old_category}"}
+        # Conflict pre-check — abort whole rename on any clash.
+        for g in groups:
+            new_path = new_category + g.path[len(old_category):]
+            clash = storage.get_group_by_path(self._conn, new_path)
+            if clash is not None and clash.id != g.id:
+                return {"error": f"conflict: {new_path} already exists — merge first"}
+        for g in groups:
+            new_path = new_category + g.path[len(old_category):]
+            storage.move_group(self._conn, g.id, new_category=new_category, new_path=new_path)
+            storage._fts_rebuild_for_group(self._conn, g.id)
+        return {"status": "ok", "renamed": len(groups),
+                "old_category": old_category, "new_category": new_category}
 
     def _tool_note_maintain(self, args: dict[str, Any]) -> dict[str, Any]:
         """Mechanical work only; NEVER clears dirty on its own."""

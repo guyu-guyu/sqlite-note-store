@@ -274,3 +274,37 @@ def test_note_move_missing_group_returns_error(tmp_path):
     raw = p.handle_tool_call("note_move", {"path": "nope/x.md", "new_category": "y"})
     assert "error" in json.loads(raw)
     p.shutdown()
+
+
+def test_note_rename_category_renames_groups(tmp_path):
+    p = _new_provider(tmp_path)
+    _call(p, "note_write", title="A", content="a", category="game/br")
+    _call(p, "note_write", title="B", content="b", category="game/br")
+    res = _call(p, "note_rename_category", old_category="game/br", new_category="game/card")
+    assert res["status"] == "ok"
+    assert res["renamed"] == 2
+    doc = _call(p, "note_read_group", path="game/card/A.md")
+    assert doc["title"] == "A"
+    p.shutdown()
+
+
+def test_note_rename_category_conflict_aborts_whole(tmp_path):
+    p = _new_provider(tmp_path)
+    _call(p, "note_write", title="A", content="a", category="game/br")
+    _call(p, "note_write", title="A", content="dup", category="game/card")
+    raw = p.handle_tool_call(
+        "note_rename_category", {"old_category": "game/br", "new_category": "game/card"}
+    )
+    assert "error" in json.loads(raw)
+    # Nothing partially applied: old path still readable.
+    _call(p, "note_read_group", path="game/br/A.md")
+    p.shutdown()
+
+
+def test_note_rename_category_empty_or_missing_errors(tmp_path):
+    p = _new_provider(tmp_path)
+    raw = p.handle_tool_call("note_rename_category", {"old_category": "nope", "new_category": "x"})
+    assert "error" in json.loads(raw)
+    raw2 = p.handle_tool_call("note_rename_category", {"old_category": "", "new_category": "x"})
+    assert "error" in json.loads(raw2)
+    p.shutdown()
