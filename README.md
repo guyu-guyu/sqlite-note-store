@@ -9,7 +9,7 @@ Hermes Agent 的 SQLite 后端记忆库插件。权威存储放在单个 SQLite 
 ## 特性
 
 - **单文件 SQLite 权威存储** — 一次写入 = 一行 INSERT/UPDATE + FTS5 索引同步，不再重写整个 md 文件、不再全仓 FTS rebuild
-- **11 个 LLM 工具** — `note_search` / `note_write` / `note_read` / `note_read_group` / `note_use` / `note_recall` / `note_comment` / `note_maintain` / `note_rewrite` / `note_move` / `note_rename_category`
+- **12 个 LLM 工具** — `note_search` / `note_write` / `note_read` / `note_read_group` / `note_use` / `note_recall` / `note_comment` / `note_maintain` / `note_rewrite` / `note_move` / `note_rename_category` / `note_rename_group`
 - **随时导出成 Markdown 目录** — 生成可 grep、可 vim 打开的目录树
 - **随时从 Markdown 目录导入** — 支持任意符合投影结构的 md 目录一键迁入
 - **Round-trip 无损** — 有单元测试断言 export→import→export 位对位相等
@@ -192,7 +192,7 @@ Fall back to `note_search(query)` when the index doesn't match.
 - Generated: `2026-08-20T18:52:00+00:00`
 
 ## coding
-- [Python 调试技巧](coding/python-debug.md) — 5 entries
+- [Python 调试技巧](coding/python-debug) — 5 entries
 - [Rust 常用命令](coding/rust-commands.md) — 3 entries *(dirty)*
 
 ## game
@@ -238,17 +238,17 @@ python __main__.py export /tmp/view --no-index  # 跳过 INDEX.md
 
 ## 工具形态
 
-以下是完整的 11 个工具的签名。
+以下是完整的 12 个工具的签名。
 
 ### `note_search(query, limit=5)`
 
 在**活跃条目**上跑 FTS5 搜索。**永远不搜冷存储**。返回 `[{path, title, category, snippet}]`。
 
-### `note_write(title, content, category="uncategorized", tags="")`
+### `note_write(title, content, tags="", path=None)`
 
 追加一条新条目。会：
-- 用 `slugify(title)` 得到文件名 → `category/<slug>.md`
-- 如果同 slug 组已存在，追加为该组的一个新 entry
+- **优先写入已有组**：传入 `path`（如 `game/br/flow`，不带 `.md`，见 INDEX）时，条目直接追加进该组，保留原组标题并合并 tags
+- **必要时才新建**：`path` 不存在时在该位置新建组（path 最后一段即组名，前段即分类）；不传 `path` 时用 `slugify(title)` 在 `uncategorized` 下派生（同 title 落同组）
 - 无论如何**都会把组置 dirty**，等 LLM 在下次维护时判断是否需要合并
 
 ### `note_read(path, entry_header=None)`
@@ -298,17 +298,21 @@ python __main__.py export /tmp/view --no-index  # 跳过 INDEX.md
 
 重命名一个分类路径（精确匹配），该分类下的所有组同步改前缀。**子分类不受影响**；移动整个子树请用 `note_move` 逐个搬。任何目标 path 冲突则整体中止。
 
+### `note_rename_group(path, new_title)`
+
+重命名一个组的标题（显示名），slug 与 path 按新标题重新派生（**分类不变**）。用于修正写错的组名——这是 LLM 唯一能改组名的工具。目标 path 已存在则报错；**不标 dirty**（内容没变，只是名字变）。
+
 ### 组/分类编辑（Dashboard API）
 
 除了上述 LLM 工具，provider 还通过 HTTP API 暴露了组和分类的管理能力，供 Web 看板使用（路由名沿用历史术语 file，对应存储概念 group）：
 
 | 操作 | 端点 | 保护 |
 |---|---|---|
-| 重命名分类 | `PUT /api/categories/{name}` | — |
+| 重命名分类 | `PUT /api/categories`（body: `{old_name, new_name}`） | — |
 | 删除分类 | `DELETE /api/categories/{name}` | 有组→禁止 (409) |
-| 重命名组 | `PUT /api/files/{path}` | — |
-| 移动组到其他分类 | `PUT /api/files/{path}` | — |
-| 删除组 | `DELETE /api/files/{path}` | 有条目→禁止 (409) |
+| 重命名组 | `PUT /api/files/{id}`（body: `{title}`） | — |
+| 移动组到其他分类 | `PUT /api/files/{id}`（body: `{category}`） | — |
+| 删除组 | `DELETE /api/files/{id}` | 有条目→禁止 (409) |
 | 编辑条目 | `PUT /api/entries/{id}` | — |
 | 删除条目 | `DELETE /api/entries/{id}` | — |
 
@@ -321,7 +325,7 @@ python __main__.py export /tmp/view --no-index  # 跳过 INDEX.md
 ├── markdown_io.py       — parse_file() / render_file() / entry ⇋ row
 ├── storage.py           — CRUD + FTS 搜索 + 冷迁移 SQL
 ├── export.py            — SQLite ⇋ 目录树的双向桥
-├── provider.py          — MemoryProvider 门面类 + 11 个 tool 处理器 + Dashboard API
+├── provider.py          — MemoryProvider 门面类 + 12 个 tool 处理器 + Dashboard API
 ├── plugin.yaml          — 元数据 + hooks
 ├── dashboard/
 │   └── dist/index.js    — 前端 bundle（统计 + INDEX 树 + 编辑器 + 搜索 + 冷存储 + 新建条目弹窗）
@@ -340,7 +344,7 @@ tests/
 └── test_provider.py      — tool 端到端 + dirty 契约 + 冷屏蔽 + Dashboard API
 ```
 
-43 项全绿。跑法：
+54 项全绿。跑法：
 
 ```bash
 cd sqlite-note-store-plugin
@@ -368,4 +372,5 @@ python -m pytest -v
 
 - **SQLite 3.42 编译时无 `contentless_delete`** → 用普通 FTS5（带副本），索引存储成本换 DELETE 兼容性
 - **FTS5 查询中的标点** → provider 层用双引号包裹整个查询，`crash-fix` 这类字符不会被解析成 NOT 操作符
+- **`note_search` 是整词匹配** → FTS5 unicode61 分词把连续中文串当作单个 token，中文子串/部分词查询可能返回空结果（dashboard 搜索有 LIKE 兜底，provider 侧目前没有）。空结果时建议换关键词重试，或先读 INDEX 命中的组
 - **单进程假设** → SQLite WAL 模式下多读者一写者是安全的，dashboard 只读连接不与 provider 写入抢锁；但**不要跨 Hermes 实例并发写同一 DB**

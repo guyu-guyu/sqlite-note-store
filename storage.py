@@ -331,6 +331,26 @@ def move_group(
     )
 
 
+def rename_group(
+    conn: sqlite3.Connection,
+    group_id: int,
+    *,
+    new_title: str,
+    new_slug: str,
+    new_path: str,
+) -> None:
+    """Rename a group's title in place, re-deriving slug/path from it.
+
+    Category stays the same. Mechanical rename only — does NOT touch
+    dirty (content is unchanged) and does NOT check conflicts; callers
+    validate new_path first.
+    """
+    conn.execute(
+        "UPDATE groups SET title = ?, slug = ?, path = ?, updated = ? WHERE id = ?",
+        (new_title, new_slug, new_path, _now(), group_id),
+    )
+
+
 def append_entry(
     conn: sqlite3.Connection,
     group_id: int,

@@ -83,6 +83,9 @@ SQLite 从根子上解决了这个问题：
 | `note_comment` | 挂 ephemeral TODO，置 dirty |
 | `note_maintain` | 机械维护 + 返回 dirty / 超限清单 |
 | `note_rewrite` | 唯一清 dirty 入口，`entries=[]` 可删组 |
+| `note_move` | 机械移动组到另一分类（slug 不变，冲突报错，不标 dirty） |
+| `note_rename_category` | 重命名分类路径（精确匹配，只改直接组，冲突整体中止） |
+| `note_rename_group` | 重命名组标题（slug/path 重新派生，分类不变，不标 dirty） |
 
 `note_read` 双模式的设计意图是**默认省 context**：LLM 日常引用记忆只需要一个条目，不应该每次拉整组；`note_read_group` 只在维护整理时用，那时 LLM 需要看到所有邻居才能判断合并/去重/拆分。
 

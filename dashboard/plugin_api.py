@@ -1,6 +1,7 @@
 """记忆笔记 Dashboard 插件 — 后端 API 路由。
 
-挂载在 /api/plugins/notes/ 下。
+挂载在 /api/plugins/<manifest name>/ 下（本插件为 sqlite-note-store）——
+前缀由宿主按 manifest.json 的 name 决定，不是写死的 notes。
 
 此层是 SQLite 存储的薄封装层：
   - GET  /index          → INDEX 树（分类 > 组 > 条目头）

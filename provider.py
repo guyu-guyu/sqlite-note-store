@@ -16,6 +16,7 @@ Tool surface (identical names, identical response shapes):
     note_rewrite  — sole dirty-clearing entry point.
     note_move     — mechanically relocate a group to another category (hierarchy maintenance).
     note_rename_category — rename a category path (exact match), updating its groups' prefixes.
+    note_rename_group    — rename a group's title (re-derives slug/path; category unchanged).
 
 Design decisions honored (see hermes-memory-provider skill):
     - Python detects, LLM decides, note_rewrite persists.
@@ -169,14 +170,26 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             index_text = export_mod._build_index_markdown(self._conn)
         return (
             "# Note Repository (sqlite-note-store)\n"
-            "Persistent memory keyed on `title` (auto-slugged to a file). "
+            "Persistent memory keyed on `title` (auto-slugged into a group). "
             "Reading path: scan the index below first to spot the right group, "
             "then `note_read(path)` for a slim headers overview, then "
             "`note_read(path, entry_header)` to fetch just the entry you want — "
             "cheap on context. Only during maintenance (processing a dirty group) "
             "use `note_read_group(path)` to see every entry's body. "
-            "Fall back to `note_search(query)` when the index doesn't match. "
-            "Writing path: `note_write(title, content, category, tags)`. "
+            "Fall back to `note_search(query)` when the index doesn't match — "
+            "search matches whole tokens, so a partial-word query may return "
+            "nothing; rephrase with a distinctive keyword. "
+            "Paths are `category/slug` — no `.md` suffix. "
+            "Writing path: `note_write(title, content, tags)` — prefer "
+            "writing into an EXISTING group: pick the group in the index whose "
+            "topic is closest to the content (loose relevance suffices, no exact "
+            "match needed) and pass its `path` (e.g. "
+            "`note_write(path='game/br/flow', ...)`) to append there. Avoid "
+            "creating new groups; create one only when no existing group fits or "
+            "writing into one would blur its topic — pass the new `path` "
+            "(`category/slug`, its last segment names the group) with a "
+            "meaningful title. When `path` is omitted, the group is derived "
+            "from the title under 'uncategorized' (same title -> same group). "
             "Cold storage is a time queue — do NOT browse it proactively; use "
             "`note_recall(entry_header)` only if the user asks to look 'from history'. "
             "Use `note_comment` to flag issues on an entry (dirty); do NOT edit "
@@ -241,7 +254,10 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                     "Search the SQLite-backed note repository for relevant "
                     "entries. IMPORTANT: First check the INDEX in the system "
                     "prompt for matching group titles. Only use this search when "
-                    "INDEX doesn't have what you need. Excludes cold-storage."
+                    "INDEX doesn't have what you need. Excludes cold-storage. "
+                    "Matches whole tokens only — partial-word or Chinese "
+                    "substring queries may return nothing; rephrase with a "
+                    "distinctive keyword."
                 ),
                 "parameters": {
                     "type": "object",
@@ -255,18 +271,27 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             {
                 "name": "note_write",
                 "description": (
-                    "Persist a note entry. IMPORTANT: Provide a descriptive, "
-                    "meaningful title — it determines the group's slug/filename "
-                    "and helps future retrieval via INDEX. Do NOT use generic "
-                    "titles like 'note' or 'memo'."
+                    "Persist a note entry. IMPORTANT: Prefer writing into an "
+                    "EXISTING group — pick the group whose topic is closest to "
+                    "the content (loose relevance is enough, no exact match "
+                    "needed) and append there by passing its `path` (like "
+                    "'category/slug', no '.md' suffix — see the INDEX). Avoid "
+                    "creating new groups/paths; create one only when nothing "
+                    "fits or writing into an existing group would blur its "
+                    "topic — pass the new `path` (its last segment names the "
+                    "group) and a meaningful `title`. Do NOT use generic titles "
+                    "like 'note' or 'memo'."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "title": {"type": "string"},
                         "content": {"type": "string"},
-                        "category": {"type": "string", "default": "uncategorized"},
                         "tags": {"type": "string", "description": "comma-separated"},
+                        "path": {
+                            "type": "string",
+                            "description": "optional — target group path like 'category/slug' (no '.md' suffix; see the INDEX). If the group exists the entry is appended into it; if not, a group is created at that location (only when necessary — prefer existing groups). When omitted, the group is derived from the title under 'uncategorized' (same title -> same group).",
+                        },
                     },
                     "required": ["title", "content"],
                 },
@@ -287,7 +312,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "relative path like 'category/slug.md'",
+                            "description": "relative path like 'category/slug' — no '.md' suffix (paths are stored without extension)",
                         },
                         "entry_header": {
                             "type": "string",
@@ -314,7 +339,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "relative path like 'category/slug'",
+                            "description": "relative path like 'category/slug' — no '.md' suffix",
                         },
                     },
                     "required": ["path"],
@@ -330,8 +355,8 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
-                        "entry_header": {"type": "string"},
+                        "path": {"type": "string", "description": "group path like 'category/slug' — no '.md' suffix"},
+                        "entry_header": {"type": "string", "description": "exact entry header to refresh"},
                     },
                     "required": ["path", "entry_header"],
                 },
@@ -362,8 +387,8 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
-                        "entry_header": {"type": "string"},
+                        "path": {"type": "string", "description": "group path like 'category/slug' — no '.md' suffix"},
+                        "entry_header": {"type": "string", "description": "exact entry header to comment on"},
                         "comment_type": {
                             "type": "string",
                             "enum": [
@@ -387,11 +412,14 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             {
                 "name": "note_maintain",
                 "description": (
-                    "Run mechanical maintenance: cold-eviction, oversized "
-                    "group detection, INDEX regeneration. Returns "
-                    "`dirty_groups`, `oversized_groups`, "
-                    "`overpopulated_categories` — the LLM must resolve each "
-                    "by reading the group and calling note_rewrite. "
+                    "Run mechanical maintenance: cold-eviction of stale "
+                    "entries, cold-batch pruning, oversized-group and "
+                    "overpopulated-category detection (reported, never "
+                    "auto-fixed). Returns `dirty_groups` — the LLM must "
+                    "resolve each by reading the group and calling "
+                    "note_rewrite — plus `cold_moved`, `cold_batches_pruned`, "
+                    "`oversized_groups`, `overpopulated_categories`, "
+                    "`deep_categories`, `hierarchy_summary` (all report-only). "
                     "note_maintain NEVER clears dirty on its own."
                 ),
                 "parameters": {
@@ -442,7 +470,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "current group path like 'category/slug.md'"},
+                        "path": {"type": "string", "description": "current group path like 'category/slug' — no '.md' suffix"},
                         "new_category": {"type": "string", "description": "target category path, e.g. 'game/br' or 'game'"},
                     },
                     "required": ["path", "new_category"],
@@ -464,6 +492,25 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                         "new_category": {"type": "string"},
                     },
                     "required": ["old_category", "new_category"],
+                },
+            },
+            {
+                "name": "note_rename_group",
+                "description": (
+                    "Rename a group's title (its display name). The slug and "
+                    "path are re-derived from the new title (category stays "
+                    "the same). Use this to fix a wrong or generic group "
+                    "name — it's the only way to change a group's name. "
+                    "Errors if the target path already exists; does not mark "
+                    "dirty (content is unchanged)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "current group path like 'category/slug' — no '.md' suffix"},
+                        "new_title": {"type": "string", "description": "new meaningful title; re-derives the group's slug/path"},
+                    },
+                    "required": ["path", "new_title"],
                 },
             },
         ]
@@ -521,38 +568,75 @@ class SQLiteNoteStoreProvider(MemoryProvider):
     def _tool_note_write(self, args: dict[str, Any]) -> dict[str, Any]:
         title = args["title"]
         content = args["content"]
-        category = args.get("category") or "uncategorized"
         tags = _parse_tags(args.get("tags"))
 
-        slug = storage.slugify(title)
-        path = storage.build_path(category, slug)
-
-        # If the group already exists, append; otherwise create fresh.
-        existing = storage.get_group_by_path(self._conn, path)
-        if existing:
-            group_id = existing.id
-            # Preserve the group's existing title/tags unless caller changed.
-            merged_tags = sorted(set(existing.tags) | set(tags))
-            storage.upsert_group(
-                self._conn,
-                path=path,
-                category=category,
-                slug=slug,
-                title=existing.title or title,
-                tags=merged_tags,
-                dirty=True,  # new entry — LLM must review during maintenance.
-                created=existing.created,
-            )
+        # `path` is the group's full location (`category/slug`, no '.md'):
+        #   - already exists → append into that group (the preferred path)
+        #   - doesn't exist  → create the group at that location
+        # When omitted, the group is derived from the title under
+        # 'uncategorized' (same title → same group).
+        explicit_path = (args.get("path") or "").strip().strip("/")
+        if explicit_path:
+            existing = storage.get_group_by_path(self._conn, explicit_path)
+            if existing:
+                group_id = existing.id
+                # Preserve the group's existing title/tags unless caller changed.
+                merged_tags = sorted(set(existing.tags) | set(tags))
+                storage.upsert_group(
+                    self._conn,
+                    path=existing.path,
+                    category=existing.category,
+                    slug=existing.slug,
+                    title=existing.title or title,
+                    tags=merged_tags,
+                    dirty=True,  # new entry — LLM must review during maintenance.
+                    created=existing.created,
+                )
+            else:
+                # New group: split category/slug out of the given path.
+                parts = explicit_path.rsplit("/", 1)
+                slug = parts[-1]
+                category = parts[0] if len(parts) > 1 else "uncategorized"
+                group_id = storage.upsert_group(
+                    self._conn,
+                    path=explicit_path,
+                    category=category,
+                    slug=slug,
+                    title=title,
+                    tags=tags,
+                    dirty=True,
+                )
         else:
-            group_id = storage.upsert_group(
-                self._conn,
-                path=path,
-                category=category,
-                slug=slug,
-                title=title,
-                tags=tags,
-                dirty=True,
-            )
+            # No explicit path — derive the group from the title slug.
+            slug = storage.slugify(title)
+            path = storage.build_path("uncategorized", slug)
+
+            # If the group already exists, append; otherwise create fresh.
+            existing = storage.get_group_by_path(self._conn, path)
+            if existing:
+                group_id = existing.id
+                # Preserve the group's existing title/tags unless caller changed.
+                merged_tags = sorted(set(existing.tags) | set(tags))
+                storage.upsert_group(
+                    self._conn,
+                    path=path,
+                    category=existing.category,
+                    slug=existing.slug,
+                    title=existing.title or title,
+                    tags=merged_tags,
+                    dirty=True,  # new entry — LLM must review during maintenance.
+                    created=existing.created,
+                )
+            else:
+                group_id = storage.upsert_group(
+                    self._conn,
+                    path=path,
+                    category="uncategorized",
+                    slug=slug,
+                    title=title,
+                    tags=tags,
+                    dirty=True,
+                )
 
         # Header defaults to a timestamped label matching the reference
         # plugin — a single entry per note_write call.
@@ -565,7 +649,7 @@ class SQLiteNoteStoreProvider(MemoryProvider):
         )
         return {
             "status": "ok",
-            "path": path,
+            "path": explicit_path or path,
             "group_id": group_id,
             "entry_id": entry_id,
             "created_new_group": existing is None,
@@ -758,6 +842,43 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             storage._fts_rebuild_for_group(self._conn, g.id)
         return {"status": "ok", "renamed": len(groups),
                 "old_category": old_category, "new_category": new_category}
+
+    def _tool_note_rename_group(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Rename a group's title; slug/path re-derived, category unchanged.
+
+        Mechanical rename — does NOT touch dirty (content unchanged), does
+        NOT check conflicts; callers validate new_path first.
+        """
+        path = (args.get("path") or "").strip().strip("/")
+        new_title = (args.get("new_title") or "").strip()
+        if not new_title:
+            return {"error": "new_title is required"}
+        row = storage.get_group_by_path(self._conn, path)
+        if row is None:
+            return {"error": f"note not found: {path}"}
+        if new_title == row.title:
+            return {"status": "ok", "path": row.path, "title": row.title,
+                    "unchanged": True}
+
+        new_slug = storage.slugify(new_title)
+        new_path = storage.build_path(row.category, new_slug)
+        if new_path == row.path:
+            # Slug unchanged (e.g. whitespace-only title difference) —
+            # update the title text in place.
+            storage.rename_group(self._conn, row.id, new_title=new_title,
+                                 new_slug=row.slug, new_path=row.path)
+            storage._fts_rebuild_for_group(self._conn, row.id)
+            return {"status": "ok", "path": row.path, "old_path": path,
+                    "title": new_title, "renamed": True}
+
+        if storage.get_group_by_path(self._conn, new_path) is not None:
+            return {"error": f"conflict: {new_path} already exists — merge via note_rewrite or pick another title"}
+
+        storage.rename_group(self._conn, row.id, new_title=new_title,
+                             new_slug=new_slug, new_path=new_path)
+        storage._fts_rebuild_for_group(self._conn, row.id)
+        return {"status": "ok", "path": new_path, "old_path": row.path,
+                "title": new_title, "renamed": True}
 
     def _tool_note_maintain(self, args: dict[str, Any]) -> dict[str, Any]:
         """Mechanical work only; NEVER clears dirty on its own."""

@@ -1,6 +1,6 @@
 ---
 name: note-maintenance
-description: 维护 SQLite 记忆库 — 读取脏组的所有条目，消化评论，合并去重，拆分超大组，迁移错分类条目，维护分类层级（深度 ≤ 3），通过 note_rewrite / note_move / note_rename_category 保存并清除脏标记。
+description: 维护 SQLite 记忆库 — 读取脏组的所有条目，消化评论，合并去重，拆分超大组，迁移错分类条目，维护分类层级（深度 ≤ 3），通过 note_rewrite / note_move / note_rename_category / note_rename_group 保存并清除脏标记。
 platforms: [linux, macos, windows]
 ---
 
@@ -63,6 +63,7 @@ platforms: [linux, macos, windows]
 - **维护动作**（响应式，仅在检测报告提示时做）：
   - 上提/下移/合并分类：`note_move(path, new_category)`（slug 不变，冲突报错，不标脏）
   - 改名：`note_rename_category(old, new)`（精确匹配，只改直接组；子分类不受影响）
+  - 组名修正：`note_rename_group(path, new_title)`（title/slug/path 一起改，分类不变，冲突报错）
   - 空分类（不再有直接组、也没有子分类）随最后一个组移走自然消失
 
 ## 完整工作流
@@ -77,7 +78,7 @@ platforms: [linux, macos, windows]
 - `hierarchy_summary`：每层节点数——看层级形状
 - `cold_moved` / `cold_batches_pruned`：自动清退数（只读信息）
 
-**完成判定**：`dirty_groups` / `oversized_groups` / `overpopulated_categories` / `deep_categories` 都为空（`hierarchy_summary` 无 `depth4+`）→ 已完成，向用户报告。
+**完成判定**：`dirty_groups` / `oversized_groups` / `overpopulated_categories` / `deep_categories` 都为空（`hierarchy_summary` 无 `depth4+`），且顺手的名称校准（见 3.7）已应用 → 已完成，向用户报告。
 
 ### 第二步：读每个脏组
 
@@ -102,8 +103,14 @@ platforms: [linux, macos, windows]
 **3.6 组结构健康度**（响应式，只评估当前脏组，不全库扫描）：
 
 - **A. 单组 >50KB（在 `oversized_groups`）→ 拆分**：按主题分成 2-3 组，主组 `note_rewrite` 写回，其他组 `note_write` 建成新组
-- **B. 节点超 50 子项（在 `overpopulated_categories`）→ 合并/迁移/归档**：`direct_groups` 按创建时间升序，最旧优先处理；两组合并 = 条目并入 A + `note_rewrite(B, entries=[])`；错分类 = 逐个 `note_write` 到目标分类 + 删原组；整组过时 = 让它自然过期到冷存储
+- **B. 节点超 50 子项（在 `overpopulated_categories`）→ 合并/迁移/归档**：`direct_groups` 按创建时间升序，最旧优先处理；两组合并 = 条目并入 A + `note_rewrite(B, entries=[])`；错分类 = 逐个 `note_write(path=目标路径)` 到目标分类 + 删原组；整组过时 = 让它自然过期到冷存储
 - **C. 脏组过小（1-2 条目）→ 顺手并入相邻主题组**；**D. 分类过稀 → 顺手上提合并**——C/D 只在处理脏组时顺手观察到才做，`note_maintain` 不会主动报告
+
+**3.7 名称校准**（响应式，处理脏组时顺手检查）——**组名和分类名是 INDEX 的检索锚**：名字不精准 = 后续检索路由失准。让名字尽可能精准描述其包含的内容：
+
+- **组名**：读脏组时留意 `title` 能否概括条目内容。过泛（“笔记”、“杂项”、“参考”）、过时、或与实际内容不符 → `note_rename_group(path, new_title)` 改名（slug/path 自动重新派生，分类不变；新 path 冲突则先合并再改）
+- **分类名**：分类下的组被搬走/合并后，分类名不再能概括其下所有组主题 → `note_rename_category(old, new)` 改名（精确匹配，只改直接组；子分类不受影响），或 `note_move` 把组挪到语义更准的分类
+- **为内容命名，不为改而改**：仅在名称明显失真、会误导检索时动手；名称已准确就不动
 
 ### 第四步：调用 `note_rewrite` 保存
 
@@ -119,7 +126,7 @@ note_rewrite(path="game/br/flow", entries=[{header, content, last_used?}, ...])
 
 ### 第五步：迁移条目（misplaced）
 
-目标分类 `note_write` 创建新条目 + 源组 `note_rewrite` 的 entries 里**不包含**它。
+目标分类 `note_write(path=目标路径)` 创建新条目 + 源组 `note_rewrite` 的 entries 里**不包含**它。
 
 ### 第六步：终结
 
@@ -139,3 +146,4 @@ note_rewrite(path="game/br/flow", entries=[{header, content, last_used?}, ...])
 - **❌ 主动大规模整理没脏标记的组 / 为合并而合并**——响应式：没信号不动；每个动作要有明确收益
 - **❌ 编辑冷存储**——`cold_batches` + `cold_entries` 不参与维护；找回用 `note_recall(entry_header)`（只读）
 - **❌ 忽视超限告警**——`oversized_groups` / `overpopulated_categories` 非空时只处理评论就了事，超限组下次维护还会出现
+- **❌ 放任名称失真**——组/分类名是 INDEX 的检索锚：名字过泛（“笔记”、“杂项”）或与实际内容不符，会让后续检索路由失准。处理脏组时发现名称失真，用 `note_rename_group` / `note_rename_category` 修正（新 path 冲突先合并）
