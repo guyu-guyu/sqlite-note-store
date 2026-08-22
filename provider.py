@@ -177,8 +177,8 @@ class SQLiteNoteStoreProvider(MemoryProvider):
             "cheap on context. Only during maintenance (processing a dirty group) "
             "use `note_read_group(path)` to see every entry's body. "
             "Fall back to `note_search(query)` when the index doesn't match — "
-            "search matches whole tokens, so a partial-word query may return "
-            "nothing; rephrase with a distinctive keyword. "
+            "search matches token prefixes plus arbitrary substrings "
+            "(Chinese-safe). "
             "Paths are `category/slug` — no `.md` suffix. "
             "Writing path: `note_write(title, content, tags)` — prefer "
             "writing into an EXISTING group: pick the group in the index whose "
@@ -255,9 +255,8 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                     "entries. IMPORTANT: First check the INDEX in the system "
                     "prompt for matching group titles. Only use this search when "
                     "INDEX doesn't have what you need. Excludes cold-storage. "
-                    "Matches whole tokens only — partial-word or Chinese "
-                    "substring queries may return nothing; rephrase with a "
-                    "distinctive keyword."
+                    "Matches token prefixes via FTS5, with a substring "
+                    "fallback — Chinese and partial-word queries work."
                 ),
                 "parameters": {
                     "type": "object",

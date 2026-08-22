@@ -174,6 +174,18 @@ def test_maintain_evicts_stale_entries_to_cold(tmp_path):
     p.shutdown()
 
 
+def test_search_finds_chinese_substring_issue_1(tmp_path):
+    """Issue #1 端到端：连续中文串的开头/中段子串必须能命中。"""
+    p = _new_provider(tmp_path)
+    _call(p, "note_write", title="卡牌BR战斗流程",
+          content="卡牌BR的回合流程：先抽牌再出牌", path="game/br/flow")
+    res = _call(p, "note_search", query="回合")
+    assert any(h["path"] == "game/br/flow" for h in res["results"])
+    res2 = _call(p, "note_search", query="卡牌")
+    assert any(h["path"] == "game/br/flow" for h in res2["results"])
+    p.shutdown()
+
+
 def test_search_excludes_cold_entries(tmp_path):
     p = _new_provider(tmp_path)
     r = _call(p, "note_write", title="C", content="findable-token", entry_header="e")

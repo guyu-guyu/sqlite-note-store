@@ -372,5 +372,5 @@ python -m pytest -v
 
 - **SQLite 3.42 编译时无 `contentless_delete`** → 用普通 FTS5（带副本），索引存储成本换 DELETE 兼容性
 - **FTS5 查询中的标点** → provider 层用双引号包裹整个查询，`crash-fix` 这类字符不会被解析成 NOT 操作符
-- **`note_search` 是整词匹配** → FTS5 unicode61 分词把连续中文串当作单个 token，中文子串/部分词查询可能返回空结果（dashboard 搜索有 LIKE 兜底，provider 侧目前没有）。空结果时建议换关键词重试，或先读 INDEX 命中的组
+- **FTS5 中文分词** → unicode61 把连续 CJK（含粘连数字）当作单个 token，纯 FTS 无法匹配中段子串。`note_search` 用「FTS5 前缀匹配 + LIKE 兜底」双路径解决：token 前缀命中走 FTS（rank 排序优先），任意子串（含中文中段）由 LIKE 兜底补足——无需重建索引，量级小成本可忽略
 - **单进程假设** → SQLite WAL 模式下多读者一写者是安全的，dashboard 只读连接不与 provider 写入抢锁；但**不要跨 Hermes 实例并发写同一 DB**

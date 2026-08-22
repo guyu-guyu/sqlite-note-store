@@ -234,34 +234,105 @@ def find_entry(
     return _row_to_entry(row) if row else None
 
 
+def _like_snippet(header: str, content: str, q: str, width: int = 64) -> str:
+    """Build a highlighted snippet around the first hit (case-insensitive)."""
+    def _snip(text: str) -> str | None:
+        idx = text.lower().find(q.lower())
+        if idx < 0:
+            return None
+        start = max(0, idx - width // 2)
+        end = min(len(text), idx + len(q) + width // 2)
+        piece = text[start:end]
+        return re.sub(
+            re.escape(q),
+            lambda m: f"<<{m.group(0)}>>",
+            piece,
+            flags=re.IGNORECASE,
+        )
+
+    for text in (content, header):
+        out = _snip(text)
+        if out is not None:
+            return out
+    return ""
+
+
 def search_fts(
     conn: sqlite3.Connection, query: str, limit: int = 5
 ) -> list[dict[str, Any]]:
     """FTS5 match query — returns [{path, title, category, snippet}, ...].
 
-    FTS5 treats certain punctuation (`-`, `:`, `"`, parentheses) as
-    operators, so a naive user query like `crash-fix` would parse as
-    NOT-token instead of a phrase. We wrap the query in double quotes
-    (escaping any embedded `"`) so anything the LLM passes reaches the
-    tokenizer as a literal phrase.
+    Two-path retrieval (mirrors the dashboard search):
+      1. FTS5 phrase-prefix match (`"query"*`) — token-prefix hits, ranked.
+         The quotes also stop `crash-fix`-style punctuation from parsing
+         as NOT-operators (see issue #1 / known-boundaries).
+      2. LIKE fallback over header/content/title/path — unicode61 treats a
+         run of CJK characters (with digits) as ONE token, so a substring
+         that isn't a token prefix (e.g. the middle of a Chinese phrase)
+         can never match FTS5. LIKE guarantees arbitrary-substring recall
+         at the cost of a linear scan — fine at note-repository scale.
+
+    FTS hits come first (ranked); LIKE extras fill the remainder of the
+    limit. Never searches cold storage (active entries only).
     """
-    if not query.strip():
+    q = (query or "").strip()
+    if not q:
         return []
-    safe = '"' + query.replace('"', '""') + '"'
-    rows = conn.execute(
-        """
-        SELECT group_path AS path,
-               group_title AS title,
-               category,
-               snippet(entries_fts, 1, '<<', '>>', '...', 64) AS snippet
-          FROM entries_fts
-         WHERE entries_fts MATCH ?
-         ORDER BY rank
-         LIMIT ?
-        """,
-        (safe, limit),
-    )
-    return [dict(r) for r in rows]
+    cap = max(int(limit), 1)
+    results: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+
+    # Path 1: FTS5 phrase-prefix match.
+    safe = '"' + q.replace('"', '""') + '"*'
+    try:
+        rows = conn.execute(
+            """
+            SELECT e.id, group_path AS path, group_title AS title, category,
+                   snippet(entries_fts, 1, '<<', '>>', '...', 64) AS snippet
+              FROM entries_fts
+              JOIN entries e ON e.id = entries_fts.rowid
+             WHERE entries_fts MATCH ?
+             ORDER BY rank
+             LIMIT ?
+            """,
+            (safe, cap),
+        )
+        for r in rows:
+            seen_ids.add(r["id"])
+            results.append(dict(r))
+    except sqlite3.OperationalError:
+        pass  # FTS5 syntax/tokenization error → rely on the LIKE path.
+
+    # Path 2: LIKE fallback for arbitrary substrings.
+    if len(results) < cap:
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
+        extra = conn.execute(
+            """
+            SELECT e.id, g.path, g.title, g.category, e.header, e.content
+              FROM entries e
+              JOIN groups g ON g.id = e.group_id
+             WHERE e.header LIKE ? ESCAPE '\\'
+                OR e.content LIKE ? ESCAPE '\\'
+                OR g.title LIKE ? ESCAPE '\\'
+                OR g.path LIKE ? ESCAPE '\\'
+             ORDER BY e.id
+             LIMIT ?
+            """,
+            (like, like, like, like, cap * 2),
+        ).fetchall()
+        for r in extra:
+            if r["id"] in seen_ids or len(results) >= cap:
+                continue
+            seen_ids.add(r["id"])
+            results.append({
+                "path": r["path"],
+                "title": r["title"],
+                "category": r["category"],
+                "snippet": _like_snippet(r["header"], r["content"], q),
+            })
+
+    return results[:cap]
 
 
 # ---------------------------------------------------------------------------

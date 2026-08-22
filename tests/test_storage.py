@@ -95,6 +95,44 @@ def test_fts_search_finds_by_header_and_content(tmp_path):
     conn.close()
 
 
+def test_fts_search_chinese_substring_issue_1(tmp_path):
+    """Issue #1: 连续 CJK（无空格）被 unicode61 当单个 token，子串查不到。
+
+    开头子串（FTS 前缀路径）、中段子串（LIKE 兜底路径）、混合中英数字
+    都应命中；英文前缀也应命中（精确短语 → 前缀增强）。
+    """
+    conn = _conn(tmp_path)
+    gid = storage.upsert_group(
+        conn, path="game/br", category="game", slug="br", title="卡牌BR战斗流程",
+        tags=[], dirty=False,
+    )
+    storage.append_entry(conn, gid, header="回合规则",
+                         content="卡牌BR的回合流程：先抽牌再出牌")
+    storage.append_entry(conn, gid, header="Pdb", content="python pdb 调试器")
+    conn.commit()
+
+    # 开头子串（FTS 前缀路径）
+    hits = storage.search_fts(conn, "卡牌", limit=5)
+    assert any(h["path"] == "game/br" for h in hits), "开头子串应命中"
+
+    # 中段子串（LIKE 兜底路径）
+    hits2 = storage.search_fts(conn, "回合", limit=5)
+    assert any(h["path"] == "game/br" for h in hits2), "中段子串应命中"
+
+    # 混合中英数字粘连
+    hits3 = storage.search_fts(conn, "卡牌BR", limit=5)
+    assert any(h["path"] == "game/br" for h in hits3)
+
+    # 英文前缀（原精确短语行为 → 前缀增强）
+    hits4 = storage.search_fts(conn, "pd", limit=5)
+    assert any("pdb" in h["snippet"].lower() for h in hits4)
+
+    # 空查询仍然安全；LIKE 特殊字符（%）不应炸
+    assert storage.search_fts(conn, "   ") == []
+    assert storage.search_fts(conn, "100%", limit=5) is not None
+    conn.close()
+
+
 def test_delete_group_cascades_and_wipes_fts(tmp_path):
     conn = _conn(tmp_path)
     gid = storage.upsert_group(
