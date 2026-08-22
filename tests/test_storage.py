@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlite_note_store import markdown_io, schema, storage
+import markdown_io, schema, storage
 
 
 def _conn(tmp_path):

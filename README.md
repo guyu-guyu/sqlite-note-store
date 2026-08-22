@@ -14,15 +14,15 @@ Hermes Agent 的 SQLite 后端记忆库插件。权威存储放在单个 SQLite 
 - **随时从 Markdown 目录导入** — 支持任意符合投影结构的 md 目录一键迁入
 - **Round-trip 无损** — 有单元测试断言 export→import→export 位对位相等
 - **无 pip 依赖** — Python 标准库 sqlite3 就够了
-- **Web 看板** — `sqlite_note_store/dashboard/` 随插件目录一起软链，挂到 Hermes Dashboard，不用导出 md 即可可视化查看和编辑
+- **Web 看板** — `dashboard/` 随插件目录一起安装，挂到 Hermes Dashboard，不用导出 md 即可可视化查看和编辑
 
 ## 安装
 
 ### 方式一：本地目录（开发/调试）
 
 ```bash
-# 1. 整体软链插件目录（$HERMES_HOME 默认 ~/.hermes）——一条命令，目录即插件
-ln -sfn /path/to/sqlite-note-store-plugin/sqlite_note_store "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store"
+# 1. 整体软链仓库根（$HERMES_HOME 默认 ~/.hermes）——一条命令，仓库即插件
+ln -sfn /path/to/sqlite-note-store-plugin "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store"
 
 # 2. 在 config.yaml 中指定 memory provider（这是激活的唯一开关）
 # memory:
@@ -31,17 +31,19 @@ ln -sfn /path/to/sqlite-note-store-plugin/sqlite_note_store "${HERMES_HOME:-$HOM
 # 3. 重启会话
 ```
 
-插件目录就是 `sqlite_note_store/` 包本身，一条软链即包含全部内容：`plugin.yaml`、`__init__.py`（register）、`provider.py`、`skills/`（维护 skill）、`dashboard/`（看板）。仓库改动实时同步，无需重装。
+插件目录就是**仓库根**：`plugin.yaml`、`__init__.py`（register）、`provider.py`、`skills/`（维护 skill）、`dashboard/`（看板）都在仓库根，一条软链即包含全部。仓库改动实时同步，无需重装。
 
 > **激活机制**：memory provider 的**激活**只由 `memory.provider` 配置键决定，与 `plugins.enabled` 无关。但**如果要使用 Web 看板（dashboard）**，插件名（manifest 的 `name`）**必须出现在 `plugins.enabled` 里**——dashboard 前端用它对用户插件做门控，不在列表里的插件 tab 会被静默过滤（见下方故障排查）。
 >
 > **验证**：在 hermes-agent 仓库根目录运行 `python -c "from plugins.memory import discover_memory_providers; print([p[0] for p in discover_memory_providers()])"`，应包含 `sqlite-note-store`。若加载失败，启动日志会包含 `Failed to load memory provider` 或 `Memory provider ... initialize failed`（加载失败只是降级跳过，不会阻塞 Hermes 启动，所以**没报错 ≠ 已加载**，务必查配置与日志）。
 
-### 方式二：pip 安装（分发）
+### 方式二：git clone 安装（分发/更新）
 
 ```bash
-cd sqlite-note-store-plugin
-pip install -e .
+# 仓库根即插件：clone 到插件目录即可用，之后 git pull 保持更新
+git clone https://github.com/guyu-guyu/sqlite-note-store.git "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store"
+cd "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store"
+git pull   # 以后更新
 ```
 
 启用后，第一次会话开始时 SQLite 数据库会自动创建，维护 skill 自动安装。
@@ -55,17 +57,17 @@ pip install -e .
 **① 目录结构必须扁平**（最常见错误）：
 
 ```text
-# ✅ 正确：插件目录 = sqlite_note_store 包整体（一条软链）
-$HERMES_HOME/plugins/sqlite-note-store → sqlite_note_store/
-├── plugin.yaml      # 在包根
-├── __init__.py      # register(ctx) 在包根
+# ✅ 正确：插件目录 = 仓库根（一条软链或 git clone）
+$HERMES_HOME/plugins/sqlite-note-store → 仓库根
+├── plugin.yaml      # 在根
+├── __init__.py      # register(ctx) 在根
 ├── provider.py      # SQLiteNoteStoreProvider + register
 ├── schema.py / storage.py / export.py / markdown_io.py
 ├── skills/
 └── dashboard/       # 看板（manifest.json + dist/ + plugin_api.py）
 
-# ❌ 错误：把整个仓库 clone/拷贝进去（含 .git、tests/、docs/、setup.py），
-#    或把包内容拆散逐文件链接 —— 发现机制要求的是一个完整目录
+# ❌ 错误：把内容拆散逐文件链接，或 plugin.yaml 埋在子目录里 ——
+#    发现机制要求的是一个完整目录（git clone 即用）
 ```
 
 **② 激活开关**：`config.yaml` 必须设置 `memory.provider: sqlite-note-store`（名字与 `provider.name`、目录名完全一致）。这是唯一激活开关。
@@ -148,7 +150,7 @@ curl -b /tmp/cookie.txt -o /dev/null -w "%{http_code}\n" \
 **导出成 Markdown 目录：**
 
 ```python
-from sqlite_note_store import schema, export
+import schema, export
 from pathlib import Path
 
 conn = schema.connect(Path.home() / ".hermes/notes")
@@ -230,8 +232,8 @@ provider.py::system_prompt_block()   ← 每轮由 Hermes 调用
 导出即可（INDEX.md 默认包含在导出目录里）：
 
 ```bash
-python -m sqlite_note_store export /tmp/view          # 生成 /tmp/view/INDEX.md
-python -m sqlite_note_store export /tmp/view --no-index  # 跳过 INDEX.md
+python __main__.py export /tmp/view          # 生成 /tmp/view/INDEX.md
+python __main__.py export /tmp/view --no-index  # 跳过 INDEX.md
 ```
 
 ## 工具形态
@@ -312,10 +314,9 @@ python -m sqlite_note_store export /tmp/view --no-index  # 跳过 INDEX.md
 
 ## 内部长什么样
 
-模块分层，每层可以独立测试：
+模块分层，每层可以独立测试（仓库根即插件根）：
 
 ```
-sqlite_note_store/
 ├── schema.py            — DDL + 建库（groups / entries / cold_batches / cold_entries + FTS5）
 ├── markdown_io.py       — parse_file() / render_file() / entry ⇋ row
 ├── storage.py           — CRUD + FTS 搜索 + 冷迁移 SQL

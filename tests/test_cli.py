@@ -1,4 +1,4 @@
-"""CLI smoke test — exercise `python -m sqlite_note_store` end-to-end."""
+"""CLI smoke test — exercise `python __main__.py` end-to-end."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 def _run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "sqlite_note_store", *args],
+        [sys.executable, str(PLUGIN_ROOT / "__main__.py"), *args],
         capture_output=True,
         text=True,
         cwd=str(cwd or PLUGIN_ROOT),

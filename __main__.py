@@ -1,13 +1,13 @@
-"""CLI: `python -m sqlite_note_store import|export|status`.
+"""CLI: `python __main__.py import|export|status`.
 
 Kept minimal — the actual work lives in export.py. This file is just a
 thin argparse layer so users can run the migration without writing
 Python.
 
 Examples:
-    python -m sqlite_note_store import /data/projects/.hermes/notes
-    python -m sqlite_note_store export /tmp/notes-backup --clean
-    python -m sqlite_note_store status
+    python __main__.py import /data/projects/.hermes/notes
+    python __main__.py export /tmp/notes-backup --clean
+    python __main__.py status
 """
 
 from __future__ import annotations
@@ -16,8 +16,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import export as export_mod
-from . import schema, storage
+# CLI 是顶层入口（python __main__.py）——绝对导入；Hermes 插件模式不加载本模块。
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import export as export_mod  # noqa: E402
+import schema, storage  # noqa: E402
 
 
 def _default_note_root() -> Path:

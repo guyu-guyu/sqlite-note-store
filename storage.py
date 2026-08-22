@@ -31,7 +31,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import markdown_io
+try:
+    from . import markdown_io
+except ImportError:  # standalone / CLI top-level run
+    import markdown_io  # type: ignore
 
 
 # ---------------------------------------------------------------------------

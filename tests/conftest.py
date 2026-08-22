@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the sqlite_note_store test suite."""
+"""Shared pytest fixtures for the plugin test suite."""
 
 from __future__ import annotations
 

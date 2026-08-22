@@ -7,7 +7,7 @@ into a markdown file must survive a parse → render → parse cycle.
 
 from __future__ import annotations
 
-from sqlite_note_store import markdown_io
+import markdown_io
 
 
 def test_parse_yaml_front_matter_minimal():

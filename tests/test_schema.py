@@ -7,7 +7,7 @@ foundation smoke suite.
 
 from __future__ import annotations
 
-from sqlite_note_store import schema
+import schema
 
 
 def test_connect_creates_tables_and_stamps_version(tmp_path):

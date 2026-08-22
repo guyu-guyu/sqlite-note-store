@@ -11,13 +11,13 @@ tmpdir = tempfile.mkdtemp(prefix="notes_smoke_")
 os.environ["NOTE_ROOT"] = tmpdir
 print(f"NOTE_ROOT={tmpdir}")
 
-# 路径基于本文件位置解析（仓库根 / sqlite_note_store / dashboard）
+# 路径基于本文件位置解析（仓库根 / dashboard）
 _HERE = Path(__file__).resolve().parent
-_PLUGIN_ROOT = _HERE.parent.parent
+_PLUGIN_ROOT = _HERE.parent
 
 # 初始化 schema + 插入测试数据
 sys.path.insert(0, str(_PLUGIN_ROOT))
-from sqlite_note_store.schema import connect  # noqa: E402
+from schema import connect  # noqa: E402
 
 conn = connect(Path(tmpdir))
 conn.execute(

@@ -41,7 +41,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import markdown_io, schema, storage
+try:
+    from . import markdown_io, schema, storage
+except ImportError:  # standalone / CLI top-level run
+    import markdown_io, schema, storage  # type: ignore
 
 
 COLD_DIRNAME = "cold-storage"

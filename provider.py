@@ -44,8 +44,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import export as export_mod
-from . import markdown_io, schema, storage
+try:
+    from . import export as export_mod
+    from . import markdown_io, schema, storage
+except ImportError:  # standalone / CLI top-level run
+    import export as export_mod  # type: ignore
+    import markdown_io, schema, storage  # type: ignore
 
 logger = logging.getLogger(__name__)
 

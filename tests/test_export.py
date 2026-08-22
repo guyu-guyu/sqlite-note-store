@@ -15,7 +15,7 @@ Concretely:
 
 from __future__ import annotations
 
-from sqlite_note_store import export, markdown_io, schema, storage
+import export, markdown_io, schema, storage
 
 
 def _seed_conn(tmp_path):

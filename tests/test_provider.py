@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from sqlite_note_store.provider import SQLiteNoteStoreProvider
+from provider import SQLiteNoteStoreProvider
 
 
 def _new_provider(tmp_path):
