@@ -14,18 +14,15 @@ Hermes Agent 的 SQLite 后端记忆库插件。权威存储放在单个 SQLite 
 - **随时从 Markdown 目录导入** — 支持任意符合投影结构的 md 目录一键迁入
 - **Round-trip 无损** — 有单元测试断言 export→import→export 位对位相等
 - **无 pip 依赖** — Python 标准库 sqlite3 就够了
-- **Web 看板** — `dashboard/` 目录挂到 Hermes Dashboard，不用导出 md 即可可视化查看和编辑
+- **Web 看板** — `sqlite_note_store/dashboard/` 随插件目录一起软链，挂到 Hermes Dashboard，不用导出 md 即可可视化查看和编辑
 
 ## 安装
 
 ### 方式一：本地目录（开发/调试）
 
 ```bash
-# 1. 把插件链接到 Hermes 的 memory provider 目录（$HERMES_HOME 默认 ~/.hermes）
-mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store"
-ln -sf /path/to/sqlite-note-store-plugin/sqlite_note_store/* "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store/"
-ln -sf /path/to/sqlite-note-store-plugin/dashboard "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store/dashboard"
-ln -sf /path/to/sqlite-note-store-plugin/README.md "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store/README.md"
+# 1. 整体软链插件目录（$HERMES_HOME 默认 ~/.hermes）——一条命令，目录即插件
+ln -sfn /path/to/sqlite-note-store-plugin/sqlite_note_store "${HERMES_HOME:-$HOME/.hermes}/plugins/sqlite-note-store"
 
 # 2. 在 config.yaml 中指定 memory provider（这是激活的唯一开关）
 # memory:
@@ -33,6 +30,8 @@ ln -sf /path/to/sqlite-note-store-plugin/README.md "${HERMES_HOME:-$HOME/.hermes
 
 # 3. 重启会话
 ```
+
+插件目录就是 `sqlite_note_store/` 包本身，一条软链即包含全部内容：`plugin.yaml`、`__init__.py`（register）、`provider.py`、`skills/`（维护 skill）、`dashboard/`（看板）。仓库改动实时同步，无需重装。
 
 > **激活机制**：memory provider 的**激活**只由 `memory.provider` 配置键决定，与 `plugins.enabled` 无关。但**如果要使用 Web 看板（dashboard）**，插件名（manifest 的 `name`）**必须出现在 `plugins.enabled` 里**——dashboard 前端用它对用户插件做门控，不在列表里的插件 tab 会被静默过滤（见下方故障排查）。
 >
@@ -56,18 +55,17 @@ pip install -e .
 **① 目录结构必须扁平**（最常见错误）：
 
 ```text
-# ✅ 正确：插件目录根直接是包内容
-$HERMES_HOME/plugins/sqlite-note-store/
-├── plugin.yaml      # 在根目录
-├── __init__.py      # register(ctx) 在根目录
+# ✅ 正确：插件目录 = sqlite_note_store 包整体（一条软链）
+$HERMES_HOME/plugins/sqlite-note-store → sqlite_note_store/
+├── plugin.yaml      # 在包根
+├── __init__.py      # register(ctx) 在包根
 ├── provider.py      # SQLiteNoteStoreProvider + register
 ├── schema.py / storage.py / export.py / markdown_io.py
 ├── skills/
-└── dashboard/       # 看板（可选）
+└── dashboard/       # 看板（manifest.json + dist/ + plugin_api.py）
 
 # ❌ 错误：把整个仓库 clone/拷贝进去（含 .git、tests/、docs/、setup.py），
-#    plugin.yaml 埋在 sqlite_note_store/ 子目录里 → Hermes 找不到 manifest，
-#    发现机制要求的是扁平结构
+#    或把包内容拆散逐文件链接 —— 发现机制要求的是一个完整目录
 ```
 
 **② 激活开关**：`config.yaml` 必须设置 `memory.provider: sqlite-note-store`（名字与 `provider.name`、目录名完全一致）。这是唯一激活开关。

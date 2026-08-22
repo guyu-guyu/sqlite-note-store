@@ -17,6 +17,11 @@ setup(
         "sqlite_note_store": [
             "plugin.yaml",
             "skills/note-maintenance/SKILL.md",
+            "dashboard/manifest.json",
+            "dashboard/plugin_api.py",
+            "dashboard/smoke_test.py",
+            "dashboard/dist/index.js",
+            "dashboard/dist/style.css",
         ],
     },
     python_requires=">=3.10",

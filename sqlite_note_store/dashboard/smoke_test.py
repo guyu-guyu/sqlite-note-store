@@ -11,9 +11,13 @@ tmpdir = tempfile.mkdtemp(prefix="notes_smoke_")
 os.environ["NOTE_ROOT"] = tmpdir
 print(f"NOTE_ROOT={tmpdir}")
 
+# 路径基于本文件位置解析（仓库根 / sqlite_note_store / dashboard）
+_HERE = Path(__file__).resolve().parent
+_PLUGIN_ROOT = _HERE.parent.parent
+
 # 初始化 schema + 插入测试数据
-sys.path.insert(0, "/projects/sqlite-note-store-plugin")
-from sqlite_note_store.schema import connect
+sys.path.insert(0, str(_PLUGIN_ROOT))
+from sqlite_note_store.schema import connect  # noqa: E402
 
 conn = connect(Path(tmpdir))
 conn.execute(
@@ -49,7 +53,7 @@ conn.commit()
 conn.close()
 
 # 导入 plugin_api 并用 TestClient 测试
-sys.path.insert(0, "/projects/sqlite-note-store-plugin/dashboard")
+sys.path.insert(0, str(_HERE))
 import plugin_api  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
