@@ -291,6 +291,10 @@ class SQLiteNoteStoreProvider(MemoryProvider):
                             "type": "string",
                             "description": "optional — target group path like 'category/slug' (no '.md' suffix; see the INDEX). If the group exists the entry is appended into it; if not, a group is created at that location (only when necessary — prefer existing groups). When omitted, the group is derived from the title under 'uncategorized' (same title -> same group).",
                         },
+                        "entry_header": {
+                            "type": "string",
+                            "description": "optional — meaningful name for THIS entry (shown as the entry header in the group; also the key used by note_read/note_use/note_comment/note_recall to fetch it). Give it a concise, descriptive title — NOT a timestamp or generic label like 'note'/'memo'. When omitted, defaults to a timestamp label.",
+                        },
                     },
                     "required": ["title", "content"],
                 },
