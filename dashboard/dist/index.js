@@ -23,6 +23,19 @@
 
   var API = "/api/plugins/sqlite-note-store";
 
+  // ── Profile 联动（v0.2.0）──────────────────────────────────────────────
+  // dashboard 的 profile 切换器把选中 profile 写进 URL（?profile=<name>），
+  // 且是 SPA 内导航（页面不重载）。宿主管理 API 在 fetch 白名单里附加该
+  // 参数，但 /api/plugins/* 不在白名单 → 这里在**每次请求时**动态读取当前
+  // URL 并附加 profile，后端 plugin_api.py 据此定位对应 profile 的笔记库。
+  var rawFetch = f;
+  f = function (url, opts) {
+    var prof = new URLSearchParams(window.location.search).get("profile");
+    if (!prof) return rawFetch(url, opts);
+    var sep = url.indexOf("?") >= 0 ? "&" : "?";
+    return rawFetch(url + sep + "profile=" + encodeURIComponent(prof), opts);
+  };
+
   // ── 小工具 ────────────────────────────────────────────────────────────
 
   function ago(ts) {
@@ -707,9 +720,29 @@
     );
   }
 
+  // ── Profile 感知外壳 ─────────────────────────────────────────────────
+  // dashboard 的 profile 切换是 SPA 内导航（history.replaceState，页面不重载），
+  // 也不向插件广播事件。外壳以轻量轮询检测 URL 的 ?profile= 变化，变化时用
+  // key 强制重挂载 NotesPage → 内部所有 effect 重新拉取对应 profile 的数据。
+  function ProfileBoundNotesPage() {
+    var profState = React.useState(function () {
+      return new URLSearchParams(window.location.search).get("profile") || "";
+    });
+    var prof = profState[0], setProf = profState[1];
+    React.useEffect(function () {
+      var last = new URLSearchParams(window.location.search).get("profile") || "";
+      var timer = setInterval(function () {
+        var cur = new URLSearchParams(window.location.search).get("profile") || "";
+        if (cur !== last) { last = cur; setProf(cur); }
+      }, 400);
+      return function () { clearInterval(timer); };
+    }, []);
+    return h(NotesPage, { key: "prof:" + prof });
+  }
+
   // ── Register ──────────────────────────────────────────────────────────
 
   if (window.__HERMES_PLUGINS__ && typeof window.__HERMES_PLUGINS__.register === "function") {
-    window.__HERMES_PLUGINS__.register("sqlite-note-store", NotesPage);
+    window.__HERMES_PLUGINS__.register("sqlite-note-store", ProfileBoundNotesPage);
   }
 })();

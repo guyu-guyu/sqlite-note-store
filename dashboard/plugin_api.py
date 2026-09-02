@@ -26,31 +26,103 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+import contextvars
+import os
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
-router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Profile 路由支持（dashboard ?profile=<name> 联动）
+# ---------------------------------------------------------------------------
+# dashboard 的 profile 切换器把选中项写进 URL（?profile=xxx）。管理页面 API
+# 由宿主在 fetch 白名单里附加该参数；但 /api/plugins/* 不在白名单，因此本
+# 插件在前端自行附加 profile 查询参数，后端在此统一解析。
+#
+# 实现：router 级依赖注入 —— 每个请求先跑 _profile_ctx()，把 profile 名写进
+# contextvar；_resolve_db_path() 读取它定位对应 profile 的笔记库。路由函数体
+# 无需感知 profile（全部经由 _conn() -> _resolve_db_path()）。
+_current_profile: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "_current_profile", default=None
+)
+
+
+async def _profile_ctx(request: Request) -> None:
+    """从查询参数读取 ?profile= 并写入 contextvar（校验合法名）。
+
+    必须是 async：sync 依赖跑在线程池、sync 路由也跑在线程池，二者线程不同，
+    contextvar 不传播；async 依赖在 event loop 上执行，其 context 会被后续
+    threadpool 调用的路由继承（copy_context）。"""
+    raw = request.query_params.get("profile")
+    if raw is None or raw == "":
+        _current_profile.set(None)
+        return
+    name = raw.strip()
+    # 与宿主 profile 命名规则一致：小写字母/数字/连字符（防路径穿越）
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+        raise HTTPException(status_code=400, detail=f"非法 profile 名: {raw!r}")
+    _current_profile.set(name)
+
+
+router = APIRouter(dependencies=[Depends(_profile_ctx)])
 
 # ---------------------------------------------------------------------------
 # DB 连接
 # ---------------------------------------------------------------------------
 
-_DB_PATH: Optional[Path] = None
+# 缓存：{profile_name 或 None: db_path} —— 多 profile 各存各的，避免串库
+_DB_PATHS: dict[Optional[str], Path] = {}
+
+
+def _hermes_base() -> Path:
+    """宿主 home：HERMES_HOME env（machine dashboard 启动时=default profile 的 home）
+    → 否则 ~/.hermes。profile 目录在 <base>/profiles/<name>/。"""
+    env_home = os.environ.get("HERMES_HOME")
+    if env_home:
+        return Path(env_home)
+    return Path.home() / ".hermes"
+
+
+def _profile_notes_root(profile: str) -> Path:
+    """定位命名 profile 的 notes 根目录：<base>/profiles/<profile>/notes。"""
+    base = _hermes_base()
+    root = base / "profiles" / profile / "notes"
+    if not root.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail=f"profile '{profile}' 的笔记库不存在（{root}）——该 profile 可能尚未初始化记忆插件",
+        )
+    return root
 
 
 def _resolve_db_path() -> Path:
-    """定位 notes.sqlite3，优先级：
-      1. 环境变量 NOTE_ROOT
-      2. <hermes_home>/notes/notes.sqlite3
-      3. ~/.hermes/notes/notes.sqlite3
-    """
-    global _DB_PATH
-    if _DB_PATH is not None and _DB_PATH.exists():
-        return _DB_PATH
+    """定位 notes.sqlite3。按当前请求的 profile（contextvar）解析：
 
+    - 无 profile / profile=default → 沿用原逻辑：
+        1. 环境变量 NOTE_ROOT
+        2. <hermes_home>/notes/notes.sqlite3（= default profile 的库）
+        3. ~/.hermes/notes/notes.sqlite3
+    - profile=<name>             → <hermes_home>/profiles/<name>/notes/notes.sqlite3
+    """
+    profile = _current_profile.get()
+    cache_key: Optional[str] = profile or None
+    cached = _DB_PATHS.get(cache_key)
+    if cached is not None and cached.exists():
+        return cached
+
+    if profile is not None:
+        db = _profile_notes_root(profile) / "notes.sqlite3"
+        if not db.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"profile '{profile}' 的笔记库未初始化：{db} 不存在",
+            )
+        _DB_PATHS[cache_key] = db
+        return db
+
+    # default / 无 profile：按原优先级
     candidates = []
-    import os
     env_root = os.environ.get("NOTE_ROOT")
     if env_root:
         candidates.append(Path(env_root))
@@ -62,7 +134,7 @@ def _resolve_db_path() -> Path:
     for root in candidates:
         db = root / "notes.sqlite3"
         if db.exists():
-            _DB_PATH = db
+            _DB_PATHS[cache_key] = db
             return db
 
     raise HTTPException(
@@ -73,7 +145,7 @@ def _resolve_db_path() -> Path:
 
 def _conn() -> sqlite3.Connection:
     db_path = _resolve_db_path()
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
