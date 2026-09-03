@@ -48,6 +48,92 @@
     return Math.floor(d / 86400) + "d";
   }
 
+  // ── 响应式：窄屏（手机）判定 ─────────────────────────────────────────
+  // 手机上左侧 280px 固定栏会吃掉整屏，右侧详情几乎没有空间。
+  // 窄屏下侧栏默认收起、展开时以抽屉浮层覆盖在详情之上（详情始终是满宽）。
+
+  var NARROW_BP = 768; // px
+
+  function useIsNarrow() {
+    var mq = typeof window.matchMedia === "function"
+      ? window.matchMedia("(max-width: " + NARROW_BP + "px)")
+      : null;
+    var s = React.useState(mq ? mq.matches : false);
+    var narrow = s[0], setNarrow = s[1];
+
+    React.useEffect(function () {
+      if (!mq) return;
+      var onChange = function (e) { setNarrow(e.matches); };
+      if (mq.addEventListener) {
+        mq.addEventListener("change", onChange);
+        return function () { mq.removeEventListener("change", onChange); };
+      }
+      mq.addListener(onChange); // Safari < 14
+      return function () { mq.removeListener(onChange); };
+    }, [mq]);
+
+    return narrow;
+  }
+
+  // ── 撑满可视高度 ──────────────────────────────────────────────────────
+  // 宿主把插件挂在 auto-height 的块里（App.tsx: `w-full min-w-0`，没有
+  // flex-1/min-h-0），所以根节点的 height:100% 解析不出来 → 整块高度由内容决定：
+  // 左边 INDEX 树一长就把右侧详情面板一起撑高。这里实测「根节点顶边 → 可视区底边」
+  // 的距离，给出确定高度，右侧面板就固定铺到屏幕底部，不再随左侧内容伸缩。
+
+  var MIN_FILL_H = 240;
+
+  // 最近一个会裁剪内容的祖先的下边界（宿主用 overflow-hidden 约束内容区）
+  function visibleBottom(node) {
+    var p = node.parentElement;
+    while (p) {
+      var cs = window.getComputedStyle ? window.getComputedStyle(p) : null;
+      if (cs && cs.overflowY !== "visible") {
+        return p.getBoundingClientRect().bottom - (parseFloat(cs.paddingBottom) || 0);
+      }
+      p = p.parentElement;
+    }
+    return window.innerHeight;
+  }
+
+  function useFillHeight(ref) {
+    var s = React.useState(0);
+    var fillH = s[0], setFillH = s[1];
+
+    // layout effect：首帧就拿到高度，避免先按内容高度画一帧再跳
+    var layoutEffect = React.useLayoutEffect || React.useEffect;
+
+    layoutEffect(function () {
+      function measure() {
+        var node = ref.current;
+        if (!node || !node.isConnected) return;
+        var bottom = Math.min(window.innerHeight, visibleBottom(node));
+        var avail = Math.floor(bottom - node.getBoundingClientRect().top);
+        setFillH(avail > MIN_FILL_H ? avail : MIN_FILL_H);
+      }
+
+      measure();
+      window.addEventListener("resize", measure);
+      // 手机地址栏收放只改 visualViewport，不一定触发 window.resize
+      var vv = window.visualViewport;
+      if (vv && vv.addEventListener) vv.addEventListener("resize", measure);
+      // 上方内容变化（宿主页头出现/侧栏收放）会改变根节点顶边
+      var ro = null;
+      if (typeof ResizeObserver === "function" && ref.current && ref.current.parentElement) {
+        ro = new ResizeObserver(measure);
+        ro.observe(ref.current.parentElement);
+      }
+
+      return function () {
+        window.removeEventListener("resize", measure);
+        if (vv && vv.removeEventListener) vv.removeEventListener("resize", measure);
+        if (ro) ro.disconnect();
+      };
+    }, [ref]);
+
+    return fillH;
+  }
+
 
   // ── INDEX 树 ──────────────────────────────────────────────────────────
 
@@ -633,12 +719,33 @@
   ];
 
   function NotesPage() {
-    var s = React.useState({ activeTab: "index", selectedNode: null, refreshKey: 0, showNew: false });
+    var isNarrow = useIsNarrow();
+    var rootRef = React.useRef(null);
+    var fillH = useFillHeight(rootRef);
+
+    var s = React.useState(function () {
+      return { activeTab: "index", selectedNode: null, refreshKey: 0, showNew: false, sidebarOpen: !isNarrow };
+    });
     var st = s[0], setSt = s[1];
 
-    var selectEntry = React.useCallback(function (id) {
-      setSt(function (p) { return Object.assign({}, p, { selectedNode: { type: "entry", id: id } }); });
+    // 进出窄屏时重置侧栏：手机上默认收起，桌面默认展开
+    React.useEffect(function () {
+      setSt(function (p) { return Object.assign({}, p, { sidebarOpen: !isNarrow }); });
+    }, [isNarrow]);
+
+    var toggleSidebar = React.useCallback(function () {
+      setSt(function (p) { return Object.assign({}, p, { sidebarOpen: !p.sidebarOpen }); });
     }, []);
+
+    // 窄屏下选中条目后自动收起抽屉，让出详情区（分类/分组点击保持展开，便于继续下钻）
+    var selectEntry = React.useCallback(function (id) {
+      setSt(function (p) {
+        return Object.assign({}, p, {
+          selectedNode: { type: "entry", id: id },
+          sidebarOpen: isNarrow ? false : p.sidebarOpen,
+        });
+      });
+    }, [isNarrow]);
 
     var selectNode = React.useCallback(function (node) {
       setSt(function (p) { return Object.assign({}, p, { selectedNode: node }); });
@@ -680,36 +787,81 @@
       }
     }
 
-    return h("div", { style: { display: "flex", flexDirection: "column", height: "100%" } },
-      // toolbar
-      h("div", { style: { display: "flex", alignItems: "center", gap: "4px", padding: "8px 12px", borderBottom: "1px solid #222" } },
+    var sidebarOpen = st.sidebarOpen;
+
+    // 侧栏容器：桌面 = 可收起的定宽栏；窄屏 = 覆盖在详情之上的抽屉
+    var sidebarStyle = isNarrow
+      ? {
+          position: "absolute", top: 0, bottom: 0, left: 0, zIndex: 30,
+          width: "min(300px, 82%)", background: "#1a1a2e", borderRight: "1px solid #222",
+          boxShadow: "2px 0 8px rgba(0,0,0,0.4)",
+          display: "flex", flexDirection: "column", overflow: "hidden",
+          transform: sidebarOpen ? "translateX(0)" : "translateX(-102%)",
+          transition: "transform 0.2s ease",
+        }
+      : {
+          width: sidebarOpen ? "280px" : "0px", flexShrink: 0,
+          borderRight: sidebarOpen ? "1px solid #222" : "none",
+          display: "flex", flexDirection: "column", overflow: "hidden",
+          transition: "width 0.2s ease",
+        };
+
+    return h("div", {
+        ref: rootRef,
+        style: {
+          display: "flex", flexDirection: "column", overflow: "hidden",
+          // 测量前先退回 100%，测量后固定为可视高度（不随左侧内容变化）
+          height: fillH ? fillH + "px" : "100%",
+        }
+      },
+      // toolbar — 窄屏下横向滚动，避免新增的侧栏开关把工具栏挤成两行
+      h("div", { style: { display: "flex", alignItems: "center", gap: "4px", padding: "8px 12px", borderBottom: "1px solid #222", flexWrap: "nowrap", overflowX: "auto" } },
+        h("button", {
+          onClick: toggleSidebar,
+          title: sidebarOpen ? "收起侧栏" : "展开侧栏",
+          "aria-label": sidebarOpen ? "收起侧栏" : "展开侧栏",
+          "aria-expanded": sidebarOpen ? "true" : "false",
+          style: {
+            flexShrink: 0, padding: "6px 8px", marginRight: "2px", fontSize: "13px", lineHeight: "1",
+            cursor: "pointer", borderRadius: "4px", border: "1px solid #333",
+            background: sidebarOpen ? "rgba(59,130,246,0.15)" : "transparent",
+            color: sidebarOpen ? "#3b82f6" : "#888",
+          }
+        }, sidebarOpen ? "✕" : "☰"),
         TABS.map(function (tab) {
           var isActive = st.activeTab === tab.id;
           return h("button", {
             key: tab.id,
             onClick: function () { setSt(function (p) { return Object.assign({}, p, { activeTab: tab.id }); }); },
             style: {
-              padding: "6px 14px", fontSize: "12px", fontWeight: 500, cursor: "pointer", borderRadius: "4px", border: "none",
+              flexShrink: 0, padding: "6px 14px", fontSize: "12px", fontWeight: 500, cursor: "pointer", borderRadius: "4px", border: "none",
               background: isActive ? "#3b82f6" : "transparent",
-              color: isActive ? "##fff" : "#888",
+              color: isActive ? "#fff" : "#888",
             }
           }, tab.label);
         }),
         h("div", { style: { flex: 1 } }),
-        h(Button, { size: "sm", onClick: function () { setSt(function (p) { return Object.assign({}, p, { showNew: true }); }); } }, "+ 新建条目")
+        h("span", { style: { flexShrink: 0, display: "inline-flex" } },
+          h(Button, { size: "sm", onClick: function () { setSt(function (p) { return Object.assign({}, p, { showNew: true }); }); } }, "+ 新建条目"))
       ),
       // body — two columns
-      h("div", { style: { display: "flex", flex: 1, overflow: "hidden" } },
-        // left panel
-        h("div", { style: { width: "280px", borderRight: "1px solid #222", overflow: "hidden", display: "flex", flexDirection: "column" } },
+      h("div", { style: { display: "flex", flex: 1, minHeight: 0, overflow: "hidden", position: "relative" } },
+        // 窄屏抽屉遮罩：点击关闭
+        isNarrow && sidebarOpen && h("div", {
+          onClick: toggleSidebar,
+          style: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.5)", zIndex: 20 }
+        }),
+        // left panel（可折叠）
+        h("div", { style: sidebarStyle },
           st.activeTab === "index" && h(IndexTree, { onSelectEntry: selectEntry, onSelectNode: selectNode, selectedNode: st.selectedNode, refreshKey: st.refreshKey }),
           st.activeTab === "search" && h(SearchPanel, { onSelectEntry: selectEntry }),
           st.activeTab === "cold" && h(ColdPanel, { onSelectEntry: selectEntry }),
           st.activeTab === "stats" && h(StatsPanel)
         ),
         // right panel
-        st.activeTab !== "stats" && h("div", { style: { flex: 1, overflow: "hidden" } },
-          rightPanel || h("div", { style: { padding: "24px", color: "#888", fontSize: "13px" } }, "在左侧选择一个条目、分组或分类进行编辑")
+        st.activeTab !== "stats" && h("div", { style: { flex: 1, minWidth: 0, minHeight: 0, height: "100%", overflow: "hidden" } },
+          rightPanel || h("div", { style: { padding: "24px", color: "#888", fontSize: "13px" } },
+            isNarrow && !sidebarOpen ? "点左上角 ☰ 展开侧栏，选择条目、分组或分类" : "在左侧选择一个条目、分组或分类进行编辑")
         )
       ),
       // new entry modal
